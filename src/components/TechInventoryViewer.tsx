@@ -1,11 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Badge } from '@/components/ui/badge';
-import { Package, User, Search, Calendar, Briefcase } from 'lucide-react';
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import { Package, User, Search, Truck, Wrench, Image, AlertCircle } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { useToast } from '@/hooks/use-toast';
 import { useAuth } from '@/contexts/AuthContext';
@@ -15,21 +15,22 @@ interface Technician {
   first_name: string;
   last_name: string;
   email: string;
+  truck_id?: string;
+  truck_name?: string;
+  truck_identifier?: string;
 }
 
-interface TechInventoryItem {
+interface VanTool {
   id: string;
-  item_id: string;
-  item_name: string;
-  quantity: number;
-  remaining_quantity: number;
-  used_quantity: number;
-  job_number: string;
-  received_at: string;
-  status: string;
-  notes: string;
+  name: string;
+  description?: string;
+  serial_number?: string;
+  barcode?: string;
+  condition: 'good' | 'fair' | 'poor' | 'damaged';
+  category_name?: string;
+  category_color?: string;
   image_url?: string;
-  category?: string;
+  unit_price?: number;
 }
 
 export const TechInventoryViewer: React.FC = () => {
@@ -37,17 +38,17 @@ export const TechInventoryViewer: React.FC = () => {
   const { toast } = useToast();
   const [technicians, setTechnicians] = useState<Technician[]>([]);
   const [selectedTechId, setSelectedTechId] = useState<string>('');
-  const [techInventory, setTechInventory] = useState<TechInventoryItem[]>([]);
+  const [vanTools, setVanTools] = useState<VanTool[]>([]);
   const [searchTerm, setSearchTerm] = useState('');
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
     fetchTechnicians();
-  }, []);
+  }, [userProfile?.company_id]);
 
   useEffect(() => {
     if (selectedTechId) {
-      fetchTechInventory(selectedTechId);
+      fetchTechVanTools(selectedTechId);
     }
   }, [selectedTechId]);
 
@@ -55,7 +56,8 @@ export const TechInventoryViewer: React.FC = () => {
     try {
       if (!userProfile?.company_id) return;
 
-      const { data, error } = await supabase
+      // Get all technicians
+      const { data: techsData, error: techsError } = await supabase
         .from('user_profiles')
         .select('id, first_name, last_name, email')
         .eq('company_id', userProfile.company_id)
@@ -63,8 +65,35 @@ export const TechInventoryViewer: React.FC = () => {
         .eq('is_active', true)
         .order('first_name');
 
-      if (error) throw error;
-      setTechnicians(data || []);
+      if (techsError) throw techsError;
+
+      // Get truck assignments for all techs
+      const techIds = techsData?.map(t => t.id) || [];
+      const { data: assignmentsData } = await supabase
+        .from('user_truck_assignments')
+        .select('user_id, truck_id, trucks:truck_id (id, name, identifier)')
+        .in('user_id', techIds)
+        .eq('company_id', userProfile.company_id);
+
+      // Map assignments to techs
+      const assignmentMap = (assignmentsData || []).reduce((acc, a) => {
+        const truck = a.trucks as any;
+        acc[a.user_id] = {
+          truck_id: a.truck_id,
+          truck_name: truck?.name,
+          truck_identifier: truck?.identifier
+        };
+        return acc;
+      }, {} as Record<string, { truck_id: string; truck_name: string; truck_identifier: string }>);
+
+      const techsWithTrucks: Technician[] = (techsData || []).map(tech => ({
+        ...tech,
+        truck_id: assignmentMap[tech.id]?.truck_id,
+        truck_name: assignmentMap[tech.id]?.truck_name,
+        truck_identifier: assignmentMap[tech.id]?.truck_identifier
+      }));
+
+      setTechnicians(techsWithTrucks);
     } catch (error) {
       console.error('Error fetching technicians:', error);
       toast({
@@ -75,97 +104,59 @@ export const TechInventoryViewer: React.FC = () => {
     }
   };
 
-  const fetchTechInventory = async (techId: string) => {
+  const fetchTechVanTools = async (techId: string) => {
     setLoading(true);
     try {
       if (!userProfile?.company_id) return;
 
-      // Get technician's active inventory
-      const { data: techInventoryData, error: techInventoryError } = await supabase
-        .from('technician_inventory')
-        .select(`
-          id,
-          item_id,
-          item_name,
-          quantity,
-          remaining_quantity,
-          used_quantity,
-          job_number,
-          received_at,
-          status,
-          notes
-        `)
-        .eq('user_id', techId)
-        .eq('company_id', userProfile.company_id)
-        .eq('status', 'active')
-        .gt('remaining_quantity', 0)
-        .order('received_at', { ascending: false });
-
-      if (techInventoryError) throw techInventoryError;
-
-      // Get inventory items details for images and categories
-      const itemIds = techInventoryData?.map(item => item.item_id) || [];
-      let inventoryDetails = [];
-      let categoriesData = [];
-      
-      if (itemIds.length > 0) {
-        // Get inventory items with image_url and category_id
-        const { data: inventoryData, error: inventoryError } = await supabase
-          .from('inventory_items')
-          .select('id, image_url, category_id')
-          .in('id', itemIds);
-
-        if (!inventoryError) {
-          inventoryDetails = inventoryData || [];
-        }
-
-        // Get all categories
-        const { data: catData, error: catError } = await supabase
-          .from('categories')
-          .select('id, name');
-
-        if (!catError) {
-          categoriesData = catData || [];
-        }
+      const tech = technicians.find(t => t.id === techId);
+      if (!tech?.truck_id) {
+        setVanTools([]);
+        setLoading(false);
+        return;
       }
 
-      // Create category map
-      const categoryMap = categoriesData.reduce((acc, cat) => {
-        acc[cat.id] = cat.name;
-        return acc;
-      }, {} as Record<string, string>);
+      // Get tools assigned to this tech's truck
+      const { data: toolsData, error: toolsError } = await supabase
+        .from('inventory_items')
+        .select('id, name, description, serial_number, barcode, condition, category_id, image_url, unit_price')
+        .eq('company_id', userProfile.company_id)
+        .eq('location_type', 'truck')
+        .eq('assigned_truck_id', tech.truck_id)
+        .order('name');
 
-      // Create a map of item details
-      const itemDetailsMap = inventoryDetails.reduce((acc, item) => {
-        acc[item.id] = {
-          image_url: item.image_url,
-          category: categoryMap[item.category_id] || 'Uncategorized'
-        };
-        return acc;
-      }, {} as Record<string, any>);
+      if (toolsError) throw toolsError;
 
-      // Transform the data
-      const transformedData: TechInventoryItem[] = (techInventoryData || []).map(item => ({
-        id: item.id,
-        item_id: item.item_id,
-        item_name: item.item_name,
-        quantity: item.quantity,
-        remaining_quantity: item.remaining_quantity,
-        used_quantity: item.used_quantity,
-        job_number: item.job_number,
-        received_at: item.received_at,
-        status: item.status,
-        notes: item.notes,
-        image_url: itemDetailsMap[item.item_id]?.image_url,
-        category: itemDetailsMap[item.item_id]?.category
+      // Get categories
+      const { data: categoriesData } = await supabase
+        .from('categories')
+        .select('id, name, color')
+        .eq('company_id', userProfile.company_id);
+
+      const categoryMap = (categoriesData || []).reduce((acc, cat) => {
+        acc[cat.id] = { name: cat.name, color: cat.color };
+        return acc;
+      }, {} as Record<string, { name: string; color: string }>);
+
+      const transformedTools: VanTool[] = (toolsData || []).map(tool => ({
+        id: tool.id,
+        name: tool.name,
+        description: tool.description,
+        serial_number: tool.serial_number,
+        barcode: tool.barcode,
+        condition: tool.condition || 'good',
+        category_name: categoryMap[tool.category_id]?.name || 'Uncategorized',
+        category_color: categoryMap[tool.category_id]?.color || '#6B7280',
+        image_url: tool.image_url,
+        unit_price: tool.unit_price
       }));
 
-      setTechInventory(transformedData);
+      setVanTools(transformedTools);
     } catch (error) {
-      console.error('Error fetching technician inventory:', error);
+      console.error('Error fetching van tools:', error);
       toast({
         title: 'Error',
-        description: 'Failed to fetch technician inventory',
+        description: 'Failed to fetch van tools',
         variant: 'destructive',
       });
     } finally {
@@ -173,9 +164,20 @@ export const TechInventoryViewer: React.FC = () => {
     }
   };
 
-  const filteredInventory = techInventory.filter(item =>
-    item.item_name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    (item.job_number && item.job_number.toLowerCase().includes(searchTerm.toLowerCase()))
+  const getConditionBadge = (condition: string) => {
+    const colors: Record<string, string> = {
+      good: 'bg-green-100 text-green-800',
+      fair: 'bg-yellow-100 text-yellow-800',
+      poor: 'bg-orange-100 text-orange-800',
+      damaged: 'bg-red-100 text-red-800'
+    };
+    return colors[condition] || colors.good;
+  };
+
+  const filteredTools = vanTools.filter(tool =>
+    tool.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+    (tool.serial_number && tool.serial_number.toLowerCase().includes(searchTerm.toLowerCase())) ||
+    (tool.barcode && tool.barcode.toLowerCase().includes(searchTerm.toLowerCase()))
   );
 
   const selectedTech = technicians.find(tech => tech.id === selectedTechId);
@@ -184,8 +186,8 @@ export const TechInventoryViewer: React.FC = () => {
     <div className="space-y-6 p-6">
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-2xl font-bold text-gray-900">Technician Inventory Viewer</h2>
-          <p className="text-gray-600">View and monitor technician personal inventories</p>
+          <h2 className="text-2xl font-bold text-gray-900">Technician Van Tools</h2>
+          <p className="text-gray-600">View tools assigned to each technician's van</p>
         </div>
       </div>
 
@@ -198,7 +200,7 @@ export const TechInventoryViewer: React.FC = () => {
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
               <Label htmlFor="technician">Technician</Label>
               <Select value={selectedTechId} onValueChange={setSelectedTechId}>
@@ -208,142 +210,169 @@ export const TechInventoryViewer: React.FC = () => {
                 <SelectContent>
                   {technicians.map((tech) => (
                     <SelectItem key={tech.id} value={tech.id}>
-                      {tech.first_name} {tech.last_name} ({tech.email})
+                      <div className="flex items-center gap-2">
+                        <span>{tech.first_name} {tech.last_name}</span>
+                        {tech.truck_name && (
+                          <Badge variant="outline" className="text-xs">
+                            <Truck className="h-3 w-3 mr-1" />
+                            {tech.truck_identifier}
+                          </Badge>
+                        )}
+                      </div>
                     </SelectItem>
                   ))}
                 </SelectContent>
               </Select>
             </div>
-            
           </div>
         </CardContent>
       </Card>
 
       {selectedTech && (
         <>
-          {/* Search and Summary */}
+          {/* Tech Info & Search */}
           <Card>
             <CardContent className="p-6">
               <div className="flex flex-col md:flex-row gap-4 items-start md:items-center justify-between">
                 <div>
                   <h3 className="text-lg font-semibold text-gray-900">
-                    {selectedTech.first_name} {selectedTech.last_name}'s Inventory
+                    {selectedTech.first_name} {selectedTech.last_name}
                   </h3>
-                  <p className="text-sm text-gray-600">
-                    {filteredInventory.length} active items
-                  </p>
+                  {selectedTech.truck_name ? (
+                    <div className="flex items-center gap-2 text-sm text-gray-600 mt-1">
+                      <Truck className="h-4 w-4" />
+                      <span>{selectedTech.truck_name}</span>
+                      <Badge variant="outline">{selectedTech.truck_identifier}</Badge>
+                      <span className="text-gray-400">•</span>
+                      <span>{filteredTools.length} tools</span>
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-2 text-sm text-orange-600 mt-1">
+                      <AlertCircle className="h-4 w-4" />
+                      <span>No van assigned to this technician</span>
+                    </div>
+                  )}
                 </div>
                 
-                <div className="flex-1 max-w-md">
-                  <div className="relative">
-                    <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
-                    <Input
-                      placeholder="Search by item name or job number..."
-                      value={searchTerm}
-                      onChange={(e) => setSearchTerm(e.target.value)}
-                      className="pl-10"
-                    />
+                {selectedTech.truck_id && (
+                  <div className="flex-1 max-w-md">
+                    <div className="relative">
+                      <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
+                      <Input
+                        placeholder="Search by name, serial number, or barcode..."
+                        value={searchTerm}
+                        onChange={(e) => setSearchTerm(e.target.value)}
+                        className="pl-10"
+                      />
+                    </div>
                   </div>
-                </div>
+                )}
               </div>
             </CardContent>
           </Card>
 
-          {/* Inventory Grid */}
-          {loading ? (
+          {/* Tools Table */}
+          {!selectedTech.truck_id ? (
+            <Card className="text-center py-12 border-orange-200 bg-orange-50">
+              <CardContent>
+                <AlertCircle className="h-12 w-12 text-orange-500 mx-auto mb-4" />
+                <p className="text-orange-700 font-medium">No van assigned</p>
+                <p className="text-orange-600 text-sm mt-2">
+                  Assign a van to this technician in the Truck Management section.
+                </p>
+              </CardContent>
+            </Card>
+          ) : loading ? (
             <Card className="text-center py-12">
               <CardContent>
                 <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mx-auto mb-4"></div>
-                <p className="text-gray-600">Loading inventory...</p>
+                <p className="text-gray-600">Loading van tools...</p>
               </CardContent>
             </Card>
-          ) : filteredInventory.length === 0 ? (
+          ) : filteredTools.length === 0 ? (
             <Card className="text-center py-12">
               <CardContent>
                 <Package className="h-12 w-12 text-gray-400 mx-auto mb-4" />
                 <p className="text-gray-600">
-                  {searchTerm ? 'No items found matching your search' : 'No inventory items found for this technician'}
+                  {searchTerm ? 'No tools found matching your search' : 'No tools assigned to this van'}
                 </p>
               </CardContent>
             </Card>
           ) : (
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-              {filteredInventory.map((item) => (
-                <Card key={item.id} className="bg-white hover:shadow-md transition-shadow">
-                  <CardHeader className="pb-2">
-                    <CardTitle className="text-sm font-medium flex items-center justify-between">
-                      <span className="flex items-center gap-2 truncate">
-                        <Package className="h-4 w-4 flex-shrink-0 text-green-600" />
-                        {item.item_name}
-                      </span>
-                      <div className="flex gap-1">
-                        <Badge variant="default" className="bg-green-600">
-                          {item.remaining_quantity}
-                        </Badge>
-                        <Badge variant="outline" className="text-xs">
-                          /{item.quantity}
-                        </Badge>
-                      </div>
-                    </CardTitle>
-                  </CardHeader>
-                  
-                  {/* Item Image */}
-                  <div className="px-6">
-                    <div className="aspect-[4/3] bg-gray-100 rounded-md flex items-center justify-center overflow-hidden relative">
-                      {item.image_url ? (
-                        <img 
-                          src={item.image_url} 
-                          alt={item.item_name}
-                          className="h-full w-full object-cover"
-                          onError={(e) => {
-                            e.currentTarget.style.display = 'none';
-                            e.currentTarget.nextSibling?.classList.remove('hidden');
-                          }}
-                        />
-                      ) : null}
-                      <div className={item.image_url ? 'hidden' : ''}>
-                        <Package className="h-8 w-8 text-gray-400" />
-                      </div>
-                    </div>
-                  </div>
-                  
-                  <CardContent className="pt-2 space-y-3">
-                    <div className="space-y-1 text-sm text-gray-600">
-                      <div className="flex justify-between">
-                        <span>Category:</span>
-                        <span>{item.category || 'Uncategorized'}</span>
-                      </div>
-                      <div className="flex justify-between">
-                        <span>From Job:</span>
-                        <span className="font-medium flex items-center gap-1">
-                          <Briefcase className="h-3 w-3" />
-                          {item.job_number || 'N/A'}
-                        </span>
-                      </div>
-                      <div className="flex justify-between">
-                        <span>Used:</span>
-                        <span>{item.used_quantity}</span>
-                      </div>
-                      <div className="flex justify-between">
-                        <span>Received:</span>
-                        <span className="flex items-center gap-1">
-                          <Calendar className="h-3 w-3" />
-                          {new Date(item.received_at).toLocaleDateString()}
-                        </span>
-                      </div>
-                    </div>
-                    
-                    {/* {item.notes && (
-                      <div className="pt-2 border-t">
-                        <p className="text-xs text-gray-500 line-clamp-3">
-                          <strong>Notes:</strong> {item.notes}
-                        </p>
-                      </div>
-                    )} */}
-                  </CardContent>
-                </Card>
-              ))}
-            </div>
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <Wrench className="h-5 w-5" />
+                  Van Tools
+                  <Badge variant="secondary">{filteredTools.length} items</Badge>
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="overflow-x-auto">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Tool</TableHead>
+                        <TableHead>Serial Number</TableHead>
+                        <TableHead>Category</TableHead>
+                        <TableHead>Condition</TableHead>
+                        <TableHead>Barcode</TableHead>
+                        <TableHead className="text-right">Value</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {filteredTools.map((tool) => (
+                        <TableRow key={tool.id}>
+                          <TableCell>
+                            <div className="flex items-center gap-3">
+                              {tool.image_url ? (
+                                <img 
+                                  src={tool.image_url} 
+                                  alt={tool.name}
+                                  className="h-10 w-10 rounded object-cover"
+                                />
+                              ) : (
+                                <div className="h-10 w-10 rounded bg-gray-100 flex items-center justify-center">
+                                  <Image className="h-5 w-5 text-gray-400" />
+                                </div>
+                              )}
+                              <div>
+                                <p className="font-medium">{tool.name}</p>
+                                {tool.description && (
+                                  <p className="text-sm text-gray-500 truncate max-w-[200px]">{tool.description}</p>
+                                )}
+                              </div>
+                            </div>
+                          </TableCell>
+                          <TableCell>
+                            <span className="font-mono text-sm">{tool.serial_number || '-'}</span>
+                          </TableCell>
+                          <TableCell>
+                            <Badge 
+                              variant="outline"
+                              style={{ borderColor: tool.category_color, color: tool.category_color }}
+                            >
+                              {tool.category_name}
+                            </Badge>
+                          </TableCell>
+                          <TableCell>
+                            <Badge className={getConditionBadge(tool.condition)}>
+                              {tool.condition.charAt(0).toUpperCase() + tool.condition.slice(1)}
+                            </Badge>
+                          </TableCell>
+                          <TableCell>
+                            <span className="font-mono text-sm">{tool.barcode || '-'}</span>
+                          </TableCell>
+                          <TableCell className="text-right">
+                            {tool.unit_price ? `$${tool.unit_price.toFixed(2)}` : '-'}
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+              </CardContent>
+            </Card>
           )}
         </>
       )}
