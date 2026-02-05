@@ -18,10 +18,9 @@ interface ImportItem {
   description?: string;
   category_id: string;
   barcode?: string;
-  quantity: number;
-  min_quantity?: number;
+  serial_number?: string;
+  condition?: 'good' | 'fair' | 'poor' | 'damaged';
   unit_price?: number;
-  location?: string;
   image?: File | null;
 }
 
@@ -35,49 +34,124 @@ export const BulkImport: React.FC<BulkImportProps> = ({ categories, onImportComp
   const [errors, setErrors] = useState<string[]>([]);
   const [importing, setImporting] = useState(false);
   const [preview, setPreview] = useState(true);
+  const [fileFormatError, setFileFormatError] = useState<string | null>(null);
   const { toast } = useToast();
   const { userProfile } = useAuth();
+
+  // Required and optional headers for validation
+  const REQUIRED_HEADERS = ['name', 'category'];
+  const VALID_HEADERS = ['name', 'category', 'serial_number', 'description', 'barcode', 'condition', 'unit_price'];
+  const OLD_FORMAT_HEADERS = ['quantity', 'min_quantity', 'location']; // Old consumable format
+
+  const normalizeHeader = (header: string): string => {
+    return header.toLowerCase().trim().replace(/\s+/g, '_');
+  };
+
+  const validateFileHeaders = (headers: string[]): { valid: boolean; error: string | null } => {
+    const normalizedHeaders = headers.map(normalizeHeader);
+    
+    // Check for old format headers
+    const oldHeadersFound = OLD_FORMAT_HEADERS.filter(h => normalizedHeaders.includes(h));
+    if (oldHeadersFound.length > 0) {
+      return {
+        valid: false,
+        error: `This file appears to be in the OLD format. Found columns: "${oldHeadersFound.join(', ')}". 
+        
+The new format requires: Name, Category, Serial_Number, Description, Barcode, Condition, Unit_Price
+
+Please update your file to remove Quantity, Min_Quantity, and Location columns, and add Serial_Number and Condition columns instead.`
+      };
+    }
+
+    // Check for required headers
+    const missingRequired = REQUIRED_HEADERS.filter(h => !normalizedHeaders.includes(h));
+    if (missingRequired.length > 0) {
+      return {
+        valid: false,
+        error: `Missing required columns: "${missingRequired.join(', ')}". 
+
+Required columns: Name, Category
+Optional columns: Serial_Number, Description, Barcode, Condition, Unit_Price`
+      };
+    }
+
+    // Check for unrecognized headers
+    const unrecognizedHeaders = normalizedHeaders.filter(h => h && !VALID_HEADERS.includes(h));
+    if (unrecognizedHeaders.length > 0) {
+      return {
+        valid: false,
+        error: `Unrecognized columns found: "${unrecognizedHeaders.join(', ')}". 
+
+Valid columns are: Name, Category, Serial_Number, Description, Barcode, Condition, Unit_Price`
+      };
+    }
+
+    return { valid: true, error: null };
+  };
+
+  // Helper to get value from row with case-insensitive key
+  const getRowValue = (row: any, key: string): any => {
+    const normalizedKey = key.toLowerCase();
+    for (const k of Object.keys(row)) {
+      if (k.toLowerCase() === normalizedKey) {
+        return row[k];
+      }
+    }
+    return undefined;
+  };
 
   const validateData = (data: any[]): { valid: ImportItem[]; errors: string[] } => {
     const validItems: ImportItem[] = [];
     const errors: string[] = [];
 
     data.forEach((row, index) => {
+      const name = getRowValue(row, 'name');
+      const category = getRowValue(row, 'category');
+      const serialNumber = getRowValue(row, 'serial_number');
+      const description = getRowValue(row, 'description');
+      const barcode = getRowValue(row, 'barcode');
+      const conditionValue = getRowValue(row, 'condition');
+      const unitPrice = getRowValue(row, 'unit_price');
+
       // Skip empty rows
-      if (!row.name) {
+      if (!name) {
         return;
       }
 
       // Required fields validation
-      if (!row.name || !row.category) {
+      if (!name || !category) {
         errors.push(`Row ${index + 1}: Name and Category are required`);
         return;
       }
 
       // Find category ID by name
-      const category = categories.find(c => 
-        c.name.toLowerCase() === row.category.toLowerCase()
+      const categoryMatch = categories.find(c => 
+        c.name.toLowerCase() === category.toString().toLowerCase().trim()
       );
 
-      if (!category) {
-        errors.push(`Row ${index + 1}: Invalid category "${row.category}"`);
+      if (!categoryMatch) {
+        errors.push(`Row ${index + 1}: Invalid category "${category}". Category must exist in your system.`);
         return;
       }
 
-      // Convert quantity to number
-      const quantity = parseInt(row.quantity) || 0;
-      const min_quantity = parseInt(row.min_quantity) || 0;
-      const unit_price = parseFloat(row.unit_price) || 0;
+      // Validate condition if provided
+      const validConditions = ['good', 'fair', 'poor', 'damaged'];
+      const condition = conditionValue?.toString().toLowerCase().trim() || 'good';
+      if (!validConditions.includes(condition)) {
+        errors.push(`Row ${index + 1}: Invalid condition "${conditionValue}". Must be good, fair, poor, or damaged`);
+        return;
+      }
+
+      const unit_price = parseFloat(unitPrice) || 0;
 
       validItems.push({
-        name: row.name.trim(),
-        description: row.description?.trim(),
-        category_id: category.id,
-        barcode: row.barcode?.trim(),
-        quantity,
-        min_quantity,
-        unit_price,
-        location: row.location?.trim()
+        name: name.toString().trim(),
+        description: description?.toString().trim(),
+        category_id: categoryMatch.id,
+        barcode: barcode?.toString().trim(),
+        serial_number: serialNumber?.toString().trim(),
+        condition: condition as 'good' | 'fair' | 'poor' | 'damaged',
+        unit_price
       });
     });
 
@@ -90,6 +164,7 @@ export const BulkImport: React.FC<BulkImportProps> = ({ categories, onImportComp
 
     setErrors([]);
     setImportData([]);
+    setFileFormatError(null);
 
     const fileType = file.name.split('.').pop()?.toLowerCase();
 
@@ -97,6 +172,16 @@ export const BulkImport: React.FC<BulkImportProps> = ({ categories, onImportComp
       Papa.parse(file, {
         header: true,
         complete: (results) => {
+          // First validate headers
+          const headers = results.meta.fields || [];
+          const headerValidation = validateFileHeaders(headers);
+          
+          if (!headerValidation.valid) {
+            setFileFormatError(headerValidation.error);
+            return;
+          }
+
+          // Then validate data
           const { valid, errors } = validateData(results.data);
           setImportData(valid);
           setErrors(errors);
@@ -109,15 +194,26 @@ export const BulkImport: React.FC<BulkImportProps> = ({ categories, onImportComp
         const workbook = XLSX.read(data, { type: 'binary' });
         const sheetName = workbook.SheetNames[0];
         const worksheet = workbook.Sheets[sheetName];
-        const jsonData = XLSX.utils.sheet_to_json(worksheet);
+        const jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1 }) as any[][];
         
-        const { valid, errors } = validateData(jsonData);
+        // Get headers from first row
+        const headers = (jsonData[0] || []).map(String);
+        const headerValidation = validateFileHeaders(headers);
+        
+        if (!headerValidation.valid) {
+          setFileFormatError(headerValidation.error);
+          return;
+        }
+
+        // Parse with headers
+        const jsonDataWithHeaders = XLSX.utils.sheet_to_json(worksheet);
+        const { valid, errors } = validateData(jsonDataWithHeaders);
         setImportData(valid);
         setErrors(errors);
       };
       reader.readAsBinaryString(file);
     } else {
-      setErrors(['Invalid file type. Please upload a CSV or Excel file.']);
+      setFileFormatError('Invalid file type. Please upload a CSV or Excel (.xlsx, .xls) file.');
     }
   };
 
@@ -135,16 +231,20 @@ export const BulkImport: React.FC<BulkImportProps> = ({ categories, onImportComp
 
     setImporting(true);
     try {
-      // First, insert all items without images
+      // First, insert all items without images - each row is ONE individual tool
       const itemsToInsert = importData.map(item => ({
         name: item.name,
         description: item.description,
         category_id: item.category_id,
-        barcode: item.barcode,
-        quantity: item.quantity,
-        min_quantity: item.min_quantity,
+        barcode: item.barcode || null,
+        serial_number: item.serial_number || null,
+        condition: item.condition || 'good',
+        location_type: 'warehouse', // All imported tools go to warehouse by default
+        assigned_truck_id: null,
+        quantity: 1, // Each row is ONE individual tool
+        min_quantity: 0,
         unit_price: item.unit_price,
-        location: item.location,
+        location: 'Warehouse',
         company_id: userProfile.company_id
       }));
 
@@ -238,24 +338,37 @@ export const BulkImport: React.FC<BulkImportProps> = ({ categories, onImportComp
             className="cursor-pointer"
           />
           
-          <Alert variant="info" className="mt-4">
+          <Alert variant="default" className="mt-4">
             <AlertCircle className="h-4 w-4" />
             <AlertTitle>File Format Requirements</AlertTitle>
             <AlertDescription>
-              <p>Upload a CSV or Excel file with the following columns:</p>
-              <ul className="list-disc list-inside mt-2">
-                <li>name (required)</li>
-                <li>category (required)</li>
-                <li>quantity (optional, defaults to 0)</li>
-                <li>description (optional)</li>
-                <li>barcode (optional)</li>
-                <li>min_quantity (optional)</li>
-                <li>unit_price (optional)</li>
-                <li>location (optional)</li>
+              <p className="mb-2">Upload a CSV or Excel file with the following columns:</p>
+              <div className="bg-gray-100 p-3 rounded-md font-mono text-sm mb-2">
+                Name, Category, Serial_Number, Description, Barcode, Condition, Unit_Price
+              </div>
+              <ul className="list-disc list-inside mt-2 space-y-1">
+                <li><strong>Name</strong> (required) - Tool name</li>
+                <li><strong>Category</strong> (required) - Must match existing category</li>
+                <li><strong>Serial_Number</strong> (optional) - Unique identifier for the tool</li>
+                <li><strong>Barcode</strong> (optional) - Barcode number</li>
+                <li><strong>Condition</strong> (optional) - good, fair, poor, or damaged (defaults to "good")</li>
+                <li><strong>Unit_Price</strong> (optional) - Price in dollars</li>
+                <li><strong>Description</strong> (optional)</li>
               </ul>
-              <p className="mt-2 font-medium">Images can be added manually in the preview table below.</p>
+              <p className="mt-3 text-sm text-orange-600 font-medium">⚠️ Do NOT include: Quantity, Min_Quantity, or Location columns (old format)</p>
+              <p className="mt-2 text-sm text-gray-600">Note: Each row represents ONE individual tool. All imported tools will be placed in the Warehouse.</p>
             </AlertDescription>
           </Alert>
+
+          {fileFormatError && (
+            <Alert variant="destructive" className="mt-4">
+              <AlertCircle className="h-4 w-4" />
+              <AlertTitle>Invalid File Format</AlertTitle>
+              <AlertDescription className="whitespace-pre-line">
+                {fileFormatError}
+              </AlertDescription>
+            </Alert>
+          )}
 
           {errors.length > 0 && (
             <Alert variant="destructive">
@@ -279,7 +392,7 @@ export const BulkImport: React.FC<BulkImportProps> = ({ categories, onImportComp
                 </h3>
                 <Button
                   onClick={importItems}
-                  disabled={importing || errors.length > 0}
+                  disabled={importing || errors.length > 0 || !!fileFormatError}
                   className="w-full sm:w-auto"
                 >
                   {importing ? 'Importing...' : 'Import Items'}
@@ -292,8 +405,8 @@ export const BulkImport: React.FC<BulkImportProps> = ({ categories, onImportComp
                     <TableRow>
                       <TableHead>Name</TableHead>
                       <TableHead>Category</TableHead>
-                      <TableHead>Quantity</TableHead>
-                      <TableHead>Location</TableHead>
+                      <TableHead>Serial #</TableHead>
+                      <TableHead>Condition</TableHead>
                       <TableHead>Image</TableHead>
                     </TableRow>
                   </TableHeader>
@@ -306,8 +419,17 @@ export const BulkImport: React.FC<BulkImportProps> = ({ categories, onImportComp
                             {getCategoryName(item.category_id)}
                           </Badge>
                         </TableCell>
-                        <TableCell>{item.quantity}</TableCell>
-                        <TableCell>{item.location || '-'}</TableCell>
+                        <TableCell className="font-mono text-sm">{item.serial_number || '-'}</TableCell>
+                        <TableCell>
+                          <Badge className={
+                            item.condition === 'good' ? 'bg-green-100 text-green-800' :
+                            item.condition === 'fair' ? 'bg-yellow-100 text-yellow-800' :
+                            item.condition === 'poor' ? 'bg-orange-100 text-orange-800' :
+                            'bg-red-100 text-red-800'
+                          }>
+                            {(item.condition || 'good').charAt(0).toUpperCase() + (item.condition || 'good').slice(1)}
+                          </Badge>
+                        </TableCell>
                         <TableCell>
                           <div className="flex items-center gap-2">
                             <Input

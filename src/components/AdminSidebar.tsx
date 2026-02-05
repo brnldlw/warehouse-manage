@@ -21,8 +21,8 @@ const menuItems = [
     items: [
       { id: "inventory", label: "Manage Parts", icon: Package },
       { id: "categories", label: "Categories", icon: Package },
-      { id: "create-request", label: "Create Request", icon: Plus },
-      { id: "fulfill", label: "Fulfill Requests", icon: Truck },
+      // { id: "create-request", label: "Create Request", icon: Plus },
+      // { id: "fulfill", label: "Fulfill Requests", icon: Truck },
     ]
   },
   {

@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Truck Stock Management</title>
+  <style>
+    body {
+      margin: 0;
+      padding: 0;
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background-color: #f8fafc;
+    }
+    .container {
+      max-width: 600px;
+      margin: 0 auto;
+      background-color: #ffffff;
+    }
+    .header {
+      background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
+      padding: 40px 30px;
+      text-align: center;
+    }
+    .header h1 {
+      margin: 0;
+      color: #ffffff;
+      font-size: 28px;
+      font-weight: 700;
+      letter-spacing: -0.5px;
+    }
+    .content {
+      padding: 40px 30px;
+      color: #1e293b;
+    }
+    .content h2 {
+      margin: 0 0 20px 0;
+      font-size: 22px;
+      font-weight: 600;
+      color: #0f172a;
+    }
+    .content p {
+      margin: 0 0 16px 0;
+      line-height: 1.6;
+      font-size: 15px;
+      color: #475569;
+    }
+    .button {
+      display: inline-block;
+      margin: 24px 0;
+      padding: 14px 32px;
+      background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
+      color: #ffffff;
+      text-decoration: none;
+      border-radius: 8px;
+      font-weight: 600;
+      font-size: 15px;
+      transition: transform 0.2s;
+    }
+    .button:hover {
+      transform: translateY(-1px);
+    }
+    .info-box {
+      background-color: #f1f5f9;
+      border-left: 4px solid #3b82f6;
+      padding: 16px 20px;
+      margin: 24px 0;
+      border-radius: 6px;
+    }
+    .info-box p {
+      margin: 0;
+      color: #334155;
+      font-size: 14px;
+    }
+    .footer {
+      background-color: #f8fafc;
+      padding: 30px;
+      text-align: center;
+      border-top: 1px solid #e2e8f0;
+    }
+    .footer p {
+      margin: 0 0 8px 0;
+      font-size: 13px;
+      color: #64748b;
+    }
+    .footer a {
+      color: #3b82f6;
+      text-decoration: none;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <!-- Header -->
+    <div class="header">
+      <h1>🚛 Truck Stock Management</h1>
+    </div>
+
+    <!-- Content -->
+    <div class="content">
+      <h2>Welcome to Your Account</h2>
+      <p>Hello there,</p>
+      <p>Thank you for joining Truck Stock Management. We're excited to help you streamline your inventory and warehouse operations.</p>
+      
+      <a href="{{ .ConfirmationURL }}" class="button">Confirm Your Email</a>
+
+      <div class="info-box">
+        <p><strong>📦 Get Started:</strong> Click the button above to verify your email and access your dashboard.</p>
+      </div>
+
+      <p>If you have any questions or need assistance, don't hesitate to reach out to our support team.</p>
+      
+      <p>Best regards,<br><strong>Truck Stock Management Team</strong></p>
+    </div>
+
+    <!-- Footer -->
+    <div class="footer">
+      <p>&copy; 2026 Truck Stock Management. All rights reserved.</p>
+      <p><a href="https://warehouse-manage-chi.vercel.app">Visit Dashboard</a></p>
+    </div>
+  </div>
+</body>
+</html>

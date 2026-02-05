@@ -19,9 +19,17 @@ export interface InventoryItem {
   price: number;
   location: string;
   image_url?: string;
-  userId?: string; // For individual user inventory
+  userId?: string;
   createdAt: Date;
   updatedAt: Date;
+  // New transferable tool fields
+  serialNumber?: string;
+  condition?: 'good' | 'fair' | 'poor' | 'damaged';
+  locationType?: 'warehouse' | 'truck';
+  assignedTruckId?: string;
+  assignedTruckName?: string;
+  assignedAt?: Date;
+  assignedBy?: string;
 }
 
 export interface User {
