@@ -8,22 +8,31 @@ import { Truck, TruckAssignment } from '@/types/truck';
 import { supabase } from '@/lib/supabase';
 import { useToast } from '@/hooks/use-toast';
 import { useAuth } from '@/contexts/AuthContext';
-import { Truck as TruckIcon, Plus, Users } from 'lucide-react';
+import { Truck as TruckIcon, Plus, Users, Loader2 } from 'lucide-react';
 
 export const TruckManager: React.FC = () => {
   const [trucks, setTrucks] = useState<Truck[]>([]);
   const [assignments, setAssignments] = useState<TruckAssignment[]>([]);
   const [newTruck, setNewTruck] = useState({ name: '', identifier: '' });
   const [loading, setLoading] = useState(false);
+  const [pageLoading, setPageLoading] = useState(true);
   const { toast } = useToast();
   const { isAdmin, userProfile } = useAuth();
 
   useEffect(() => {
     if (userProfile?.company_id) {
-      loadTrucks();
-      loadAssignments();
+      loadPageData();
     }
   }, [userProfile?.company_id]);
+
+  const loadPageData = async () => {
+    setPageLoading(true);
+    try {
+      await Promise.all([loadTrucks(), loadAssignments()]);
+    } finally {
+      setPageLoading(false);
+    }
+  };
 
   const loadTrucks = async () => {
     try {
@@ -136,6 +145,15 @@ export const TruckManager: React.FC = () => {
 
   return (
     <div className="space-y-6">
+      {pageLoading ? (
+        <Card className="text-center py-12">
+          <CardContent>
+            <Loader2 className="h-8 w-8 animate-spin text-blue-600 mx-auto mb-4" />
+            <p className="text-gray-600">Loading trucks...</p>
+          </CardContent>
+        </Card>
+      ) : (
+        <>
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
@@ -197,6 +215,8 @@ export const TruckManager: React.FC = () => {
           </Card>
         ))}
       </div>
+        </>
+      )}
     </div>
   );
 };

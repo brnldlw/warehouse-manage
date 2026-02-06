@@ -255,6 +255,26 @@ Valid columns are: Name, Category, Serial_Number, Description, Barcode, Conditio
 
       if (error) throw error;
 
+      // Log activity for bulk import
+      const { data: { user } } = await supabase.auth.getUser();
+      if (user && insertedItems) {
+        const activityLogs = insertedItems.map(item => ({
+          company_id: userProfile.company_id,
+          user_id: user.id,
+          action: 'added',
+          details: {
+            item_name: item.name,
+            item_id: item.id,
+            serial_number: item.serial_number,
+            condition: item.condition,
+            location: 'Warehouse',
+            import_method: 'bulk'
+          }
+        }));
+
+        await supabase.from('activity_logs').insert(activityLogs);
+      }
+
       // Now handle image uploads for items that have images
       const itemsWithImages = importData.filter(item => item.image);
       

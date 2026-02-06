@@ -7,7 +7,7 @@ import { Truck, TruckAssignment } from '@/types/truck';
 import { dbOperations } from '@/lib/dbUtils';
 import { showErrorNotification, showSuccessNotification } from '@/lib/notificationUtils';
 import { useToast } from '@/hooks/use-toast';
-import { UserCheck, Truck as TruckIcon } from 'lucide-react';
+import { UserCheck, Truck as TruckIcon, Loader2 } from 'lucide-react';
 export const TruckAssignmentManager: React.FC = () => {
   const [trucks, setTrucks] = useState<Truck[]>([]);
   const [users, setUsers] = useState<any[]>([]);
@@ -15,6 +15,7 @@ export const TruckAssignmentManager: React.FC = () => {
   const [selectedUser, setSelectedUser] = useState('');
   const [selectedTruck, setSelectedTruck] = useState('');
   const [loading, setLoading] = useState(false);
+  const [pageLoading, setPageLoading] = useState(true);
   const { toast } = useToast();
 
   useEffect(() => {
@@ -22,6 +23,7 @@ export const TruckAssignmentManager: React.FC = () => {
   }, []);
 
   const loadData = async () => {
+    setPageLoading(true);
     try {
       const [trucks, users, assignments] = await Promise.all([
         dbOperations.getTrucks(),
@@ -34,6 +36,8 @@ export const TruckAssignmentManager: React.FC = () => {
       setAssignments(assignments || []);
     } catch (error) {
       showErrorNotification(error, 'Failed to load data');
+    } finally {
+      setPageLoading(false);
     }
   };
 
@@ -81,6 +85,15 @@ export const TruckAssignmentManager: React.FC = () => {
 
   return (
     <div className="space-y-6">
+      {pageLoading ? (
+        <Card className="text-center py-12">
+          <CardContent>
+            <Loader2 className="h-8 w-8 animate-spin text-blue-600 mx-auto mb-4" />
+            <p className="text-gray-600">Loading assignments...</p>
+          </CardContent>
+        </Card>
+      ) : (
+        <>
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
@@ -163,6 +176,8 @@ export const TruckAssignmentManager: React.FC = () => {
           </div>
         </CardContent>
       </Card>
+        </>
+      )}
     </div>
   );
 };

@@ -15,7 +15,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import { 
   Package, Plus, Trash2, Upload, Image, X, Edit, 
   ArrowRightLeft, Warehouse, Truck, Search,
-  ChevronDown, ChevronUp, MoreHorizontal
+  ChevronDown, ChevronUp, MoreHorizontal, Loader2
 } from 'lucide-react';
 import { BulkImport } from './BulkImport';
 import { uploadItemImage, deleteItemImage, validateImageFile } from '@/lib/imageUtils';
@@ -72,12 +72,21 @@ export const InventoryManager: React.FC = () => {
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('asc');
   const [showBulkImport, setShowBulkImport] = useState(false);
   const [showAddForm, setShowAddForm] = useState(false);
+  const [pageLoading, setPageLoading] = useState(true);
   const { toast } = useToast();
 
   useEffect(() => {
-    loadItems();
-    loadTrucks();
+    loadPageData();
   }, []);
+
+  const loadPageData = async () => {
+    setPageLoading(true);
+    try {
+      await Promise.all([loadItems(), loadTrucks()]);
+    } finally {
+      setPageLoading(false);
+    }
+  };
 
   const loadTrucks = async () => {
     try {
@@ -275,6 +284,21 @@ export const InventoryManager: React.FC = () => {
         }
       }
       
+      // Log activity
+      const truckName = data.trucks?.name || null;
+      await supabase.from('activity_logs').insert({
+        company_id: userProfile.company_id,
+        user_id: user.id,
+        action: 'added',
+        details: {
+          item_name: data.name,
+          item_id: data.id,
+          serial_number: data.serial_number,
+          condition: data.condition,
+          location: data.location_type === 'warehouse' ? 'Warehouse' : truckName
+        }
+      });
+
       const newInventoryItem: InventoryItem = {
         id: data.id,
         name: data.name,
@@ -325,8 +349,25 @@ export const InventoryManager: React.FC = () => {
     if (!confirm(`Are you sure you want to delete "${itemName}"?`)) return;
     
     try {
+      const { data: { user } } = await supabase.auth.getUser();
       const item = items.find(i => i.id === itemId);
       
+      // Log activity before deleting
+      if (user && userProfile?.company_id && item) {
+        await supabase.from('activity_logs').insert({
+          company_id: userProfile.company_id,
+          user_id: user.id,
+          action: 'deleted',
+          details: {
+            item_name: itemName,
+            item_id: itemId,
+            serial_number: item.serialNumber,
+            condition: item.condition,
+            location: item.locationType === 'warehouse' ? 'Warehouse' : item.assignedTruckName
+          }
+        });
+      }
+
       const { error } = await supabase
         .from('inventory_items')
         .delete()
@@ -352,6 +393,13 @@ export const InventoryManager: React.FC = () => {
     if (!user) return;
 
     try {
+      // Determine from and to locations
+      const fromLocation = transferItem.locationType === 'warehouse' 
+        ? 'Warehouse' 
+        : transferItem.assignedTruckName || 'Unknown';
+      const toTruck = trucks.find(t => t.id === transferTo.truckId);
+      const toLocation = transferTo.type === 'warehouse' ? 'Warehouse' : toTruck?.name || 'Unknown';
+
       const updateData = {
         location_type: transferTo.type,
         assigned_truck_id: transferTo.type === 'truck' ? transferTo.truckId : null,
@@ -366,6 +414,20 @@ export const InventoryManager: React.FC = () => {
         .eq('id', transferItem.id);
 
       if (error) throw error;
+
+      // Log transfer activity
+      await supabase.from('activity_logs').insert({
+        company_id: userProfile.company_id,
+        user_id: user.id,
+        action: 'transferred',
+        details: {
+          item_name: transferItem.name,
+          item_id: transferItem.id,
+          serial_number: transferItem.serialNumber,
+          from: fromLocation,
+          to: toLocation
+        }
+      });
 
       const truck = trucks.find(t => t.id === transferTo.truckId);
       setItems(prev => prev.map(item => 
@@ -575,6 +637,15 @@ export const InventoryManager: React.FC = () => {
 
   return (
     <div className="space-y-6">
+      {pageLoading ? (
+        <Card className="text-center py-12">
+          <CardContent>
+            <Loader2 className="h-8 w-8 animate-spin text-blue-600 mx-auto mb-4" />
+            <p className="text-gray-600">Loading inventory...</p>
+          </CardContent>
+        </Card>
+      ) : (
+        <>
       {/* Header Actions */}
       <div className="flex flex-col sm:flex-row gap-4 justify-between items-start sm:items-center">
         <h2 className="text-2xl font-bold flex items-center gap-2">
@@ -1125,7 +1196,8 @@ export const InventoryManager: React.FC = () => {
           </div>
         </CardContent>
       </Card>
+        </>
+      )}
     </div>
   );
 };
-  

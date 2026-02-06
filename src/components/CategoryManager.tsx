@@ -6,7 +6,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import { Label } from '@/components/ui/label';
-import { Plus, Edit, Trash2, Tag, Image, X } from 'lucide-react';
+import { Plus, Edit, Trash2, Tag, Image, X, Loader2 } from 'lucide-react';
 import { useInventory } from '@/contexts/InventoryContext';
 import { useAuth } from '@/contexts/AuthContext';
 import { uploadCategoryImage, deleteCategoryImage, validateImageFile } from '@/lib/imageUtils';
@@ -131,6 +131,13 @@ const CategoryManager: React.FC = () => {
 
   return (
     <Card className="bg-white shadow-lg">
+      {loading ? (
+        <CardContent className="text-center py-12">
+          <Loader2 className="h-8 w-8 animate-spin text-blue-600 mx-auto mb-4" />
+          <p className="text-gray-600">Loading categories...</p>
+        </CardContent>
+      ) : (
+        <>
       <CardHeader>
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
           <CardTitle className="flex items-center gap-2">
@@ -322,6 +329,8 @@ const CategoryManager: React.FC = () => {
           </div>
         )}
       </CardContent>
+        </>
+      )}
     </Card>
   );
 };

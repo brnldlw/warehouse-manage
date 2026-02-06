@@ -3,7 +3,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { UserCheck, Activity, Package, Clock, Truck, Wrench, ArrowRightLeft } from 'lucide-react';
+import { UserCheck, Activity, Package, Clock, Truck, Wrench, ArrowRightLeft, Loader2 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { useToast } from '@/hooks/use-toast';
 import { useAuth } from '@/contexts/AuthContext';
@@ -37,15 +37,24 @@ export const TechManagement: React.FC = () => {
   const [techs, setTechs] = useState<TechUser[]>([]);
   const [activities, setActivities] = useState<TechActivity[]>([]);
   const [loading, setLoading] = useState(false);
+  const [pageLoading, setPageLoading] = useState(true);
   const { toast } = useToast();
   const { userProfile } = useAuth();
 
   useEffect(() => {
     if (userProfile?.company_id) {
-      fetchTechs();
-      fetchTechActivities();
+      loadPageData();
     }
   }, [userProfile?.company_id]);
+
+  const loadPageData = async () => {
+    setPageLoading(true);
+    try {
+      await Promise.all([fetchTechs(), fetchTechActivities()]);
+    } finally {
+      setPageLoading(false);
+    }
+  };
 
   const fetchTechs = async () => {
     try {
@@ -210,6 +219,15 @@ export const TechManagement: React.FC = () => {
 
   return (
     <div className="space-y-6">
+      {pageLoading ? (
+        <Card className="text-center py-12">
+          <CardContent>
+            <Loader2 className="h-8 w-8 animate-spin text-blue-600 mx-auto mb-4" />
+            <p className="text-gray-600">Loading technicians...</p>
+          </CardContent>
+        </Card>
+      ) : (
+        <>
       {/* Stats Cards */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
         <Card>
@@ -384,6 +402,8 @@ export const TechManagement: React.FC = () => {
           </div>
         </CardContent>
       </Card>
+        </>
+      )}
     </div>
   );
 };
