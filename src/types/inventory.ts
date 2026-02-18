@@ -30,6 +30,8 @@ export interface InventoryItem {
   assignedTruckName?: string;
   assignedAt?: Date;
   assignedBy?: string;
+  // Grouping field for quantity display
+  groupId?: string;
 }
 
 export interface User {

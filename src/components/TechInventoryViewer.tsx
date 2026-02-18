@@ -31,6 +31,20 @@ interface VanTool {
   category_color?: string;
   image_url?: string;
   unit_price?: number;
+  group_id?: string;
+}
+
+interface GroupedVanTool {
+  groupId: string;
+  name: string;
+  description?: string;
+  condition: string;
+  category_name?: string;
+  category_color?: string;
+  image_url?: string;
+  items: VanTool[];
+  quantity: number;
+  totalValue: number;
 }
 
 export const TechInventoryViewer: React.FC = () => {
@@ -119,7 +133,7 @@ export const TechInventoryViewer: React.FC = () => {
       // Get tools assigned to this tech's truck
       const { data: toolsData, error: toolsError } = await supabase
         .from('inventory_items')
-        .select('id, name, description, serial_number, barcode, condition, category_id, image_url, unit_price')
+        .select('id, name, description, serial_number, barcode, condition, category_id, image_url, unit_price, group_id')
         .eq('company_id', userProfile.company_id)
         .eq('location_type', 'truck')
         .eq('assigned_truck_id', tech.truck_id)
@@ -148,7 +162,8 @@ export const TechInventoryViewer: React.FC = () => {
         category_name: categoryMap[tool.category_id]?.name || 'Uncategorized',
         category_color: categoryMap[tool.category_id]?.color || '#6B7280',
         image_url: tool.image_url,
-        unit_price: tool.unit_price
+        unit_price: tool.unit_price,
+        group_id: tool.group_id
       }));
 
       setVanTools(transformedTools);
@@ -179,6 +194,34 @@ export const TechInventoryViewer: React.FC = () => {
     (tool.serial_number && tool.serial_number.toLowerCase().includes(searchTerm.toLowerCase())) ||
     (tool.barcode && tool.barcode.toLowerCase().includes(searchTerm.toLowerCase()))
   );
+
+  // Group filtered tools by group_id
+  const groupedTools: GroupedVanTool[] = (() => {
+    const groups = new Map<string, GroupedVanTool>();
+    for (const tool of filteredTools) {
+      const key = tool.group_id || tool.id;
+      if (groups.has(key)) {
+        const group = groups.get(key)!;
+        group.items.push(tool);
+        group.quantity = group.items.length;
+        group.totalValue += tool.unit_price || 0;
+      } else {
+        groups.set(key, {
+          groupId: key,
+          name: tool.name,
+          description: tool.description,
+          condition: tool.condition,
+          category_name: tool.category_name,
+          category_color: tool.category_color,
+          image_url: tool.image_url,
+          items: [tool],
+          quantity: 1,
+          totalValue: tool.unit_price || 0
+        });
+      }
+    }
+    return Array.from(groups.values()).sort((a, b) => a.name.localeCompare(b.name));
+  })();
 
   const selectedTech = technicians.find(tech => tech.id === selectedTechId);
 
@@ -305,6 +348,9 @@ export const TechInventoryViewer: React.FC = () => {
                   <Wrench className="h-5 w-5" />
                   Van Tools
                   <Badge variant="secondary">{filteredTools.length} items</Badge>
+                  {groupedTools.length !== filteredTools.length && (
+                    <Badge variant="outline">{groupedTools.length} types</Badge>
+                  )}
                 </CardTitle>
               </CardHeader>
               <CardContent>
@@ -313,22 +359,22 @@ export const TechInventoryViewer: React.FC = () => {
                     <TableHeader>
                       <TableRow>
                         <TableHead>Tool</TableHead>
-                        <TableHead>Serial Number</TableHead>
+                        <TableHead className="text-center">Qty</TableHead>
                         <TableHead>Category</TableHead>
                         <TableHead>Condition</TableHead>
-                        <TableHead>Barcode</TableHead>
+                        <TableHead>Serial / Barcode</TableHead>
                         <TableHead className="text-right">Value</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {filteredTools.map((tool) => (
-                        <TableRow key={tool.id}>
+                      {groupedTools.map((group) => (
+                        <TableRow key={group.groupId}>
                           <TableCell>
                             <div className="flex items-center gap-3">
-                              {tool.image_url ? (
+                              {group.image_url ? (
                                 <img 
-                                  src={tool.image_url} 
-                                  alt={tool.name}
+                                  src={group.image_url} 
+                                  alt={group.name}
                                   className="h-10 w-10 rounded object-cover"
                                 />
                               ) : (
@@ -337,34 +383,43 @@ export const TechInventoryViewer: React.FC = () => {
                                 </div>
                               )}
                               <div>
-                                <p className="font-medium">{tool.name}</p>
-                                {tool.description && (
-                                  <p className="text-sm text-gray-500 truncate max-w-[200px]">{tool.description}</p>
+                                <p className="font-medium">{group.name}</p>
+                                {group.description && (
+                                  <p className="text-sm text-gray-500 truncate max-w-[200px]">{group.description}</p>
                                 )}
                               </div>
                             </div>
                           </TableCell>
-                          <TableCell>
-                            <span className="font-mono text-sm">{tool.serial_number || '-'}</span>
+                          <TableCell className="text-center">
+                            <Badge variant={group.quantity > 1 ? 'default' : 'secondary'} className={group.quantity > 1 ? 'bg-blue-600' : ''}>
+                              {group.quantity}
+                            </Badge>
                           </TableCell>
                           <TableCell>
                             <Badge 
                               variant="outline"
-                              style={{ borderColor: tool.category_color, color: tool.category_color }}
+                              style={{ borderColor: group.category_color, color: group.category_color }}
                             >
-                              {tool.category_name}
+                              {group.category_name}
                             </Badge>
                           </TableCell>
                           <TableCell>
-                            <Badge className={getConditionBadge(tool.condition)}>
-                              {tool.condition.charAt(0).toUpperCase() + tool.condition.slice(1)}
+                            <Badge className={getConditionBadge(group.condition)}>
+                              {group.condition.charAt(0).toUpperCase() + group.condition.slice(1)}
                             </Badge>
                           </TableCell>
                           <TableCell>
-                            <span className="font-mono text-sm">{tool.barcode || '-'}</span>
+                            {group.quantity === 1 ? (
+                              <span className="font-mono text-sm">
+                                {group.items[0]?.serial_number ? `SN: ${group.items[0].serial_number}` : 
+                                 group.items[0]?.barcode ? `BC: ${group.items[0].barcode}` : '-'}
+                              </span>
+                            ) : (
+                              <span className="text-sm text-gray-500">({group.quantity} items)</span>
+                            )}
                           </TableCell>
                           <TableCell className="text-right">
-                            {tool.unit_price ? `$${tool.unit_price.toFixed(2)}` : '-'}
+                            {group.totalValue > 0 ? `$${group.totalValue.toFixed(2)}` : '-'}
                           </TableCell>
                         </TableRow>
                       ))}

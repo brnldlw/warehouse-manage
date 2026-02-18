@@ -33,6 +33,21 @@ interface TruckOption {
   identifier: string;
 }
 
+interface GroupedTool {
+  groupId: string;
+  name: string;
+  description?: string;
+  categoryId: string;
+  condition: string;
+  locationType: string;
+  assignedTruckId?: string;
+  assignedTruckName?: string;
+  image_url?: string;
+  price: number;
+  items: InventoryItem[];
+  quantity: number;
+}
+
 export const InventoryManager: React.FC = () => {
   const [items, setItems] = useState<InventoryItem[]>([]);
   const [trucks, setTrucks] = useState<TruckOption[]>([]);
@@ -48,6 +63,7 @@ export const InventoryManager: React.FC = () => {
     locationType: 'warehouse' as 'warehouse' | 'truck',
     assignedTruckId: '',
     price: 0,
+    quantity: 1,
     image: null as File | null
   });
   const [loading, setLoading] = useState(false);
@@ -63,6 +79,8 @@ export const InventoryManager: React.FC = () => {
     image: null as File | null
   });
   const [transferItem, setTransferItem] = useState<InventoryItem | null>(null);
+  const [transferGroup, setTransferGroup] = useState<GroupedTool | null>(null);
+  const [transferQuantity, setTransferQuantity] = useState(1);
   const [transferTo, setTransferTo] = useState<{ type: 'warehouse' | 'truck'; truckId?: string }>({ type: 'warehouse' });
   const [searchTerm, setSearchTerm] = useState('');
   const [filterLocation, setFilterLocation] = useState<'all' | 'warehouse' | 'truck'>('all');
@@ -72,6 +90,7 @@ export const InventoryManager: React.FC = () => {
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('asc');
   const [showBulkImport, setShowBulkImport] = useState(false);
   const [showAddForm, setShowAddForm] = useState(false);
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
   const [pageLoading, setPageLoading] = useState(true);
   const { toast } = useToast();
 
@@ -154,7 +173,8 @@ export const InventoryManager: React.FC = () => {
         assignedTruckId: item.assigned_truck_id,
         assignedTruckName: item.trucks?.name,
         assignedAt: item.assigned_at ? new Date(item.assigned_at) : undefined,
-        assignedBy: item.assigned_by
+        assignedBy: item.assigned_by,
+        groupId: item.group_id
       }));
       
       setItems(transformedItems);
@@ -241,12 +261,16 @@ export const InventoryManager: React.FC = () => {
         return;
       }
 
-      const itemData = {
+      const qty = Math.max(1, Math.min(itemForm.quantity, 500)); // Cap at 500
+      const groupId = crypto.randomUUID();
+
+      // Build array of items (all share same group_id)
+      const itemsToInsert = Array.from({ length: qty }, (_, i) => ({
         name: itemForm.name.trim(),
         description: itemForm.description,
         category_id: itemForm.categoryId,
-        barcode: barcode,
-        serial_number: serialNumber,
+        barcode: qty === 1 && barcode ? barcode : null, // Only set barcode if single item
+        serial_number: qty === 1 && serialNumber ? serialNumber : null, // Only set serial if single
         condition: itemForm.condition,
         location_type: itemForm.locationType,
         assigned_truck_id: itemForm.locationType === 'truck' ? itemForm.assignedTruckId : null,
@@ -256,70 +280,77 @@ export const InventoryManager: React.FC = () => {
         min_quantity: 0,
         unit_price: itemForm.price,
         location: itemForm.locationType === 'warehouse' ? 'Warehouse' : null,
-        company_id: userProfile.company_id
-      };
+        company_id: userProfile.company_id,
+        group_id: groupId
+      }));
 
       const { data, error } = await supabase
         .from('inventory_items')
-        .insert([itemData])
+        .insert(itemsToInsert)
         .select(`
           *,
           trucks:assigned_truck_id (name, identifier)
-        `)
-        .single();
+        `);
 
       if (error) throw error;
+
+      if (!data || data.length === 0) throw new Error('No items returned');
 
       let imageUrl = null;
       if (itemForm.image) {
         const validation = validateImageFile(itemForm.image);
         if (validation.valid) {
-          imageUrl = await uploadItemImage(itemForm.image, data.id);
+          // Upload image for the first item; all grouped items share same visual
+          imageUrl = await uploadItemImage(itemForm.image, data[0].id);
           if (imageUrl) {
+            // Update all items in group with the image
             await supabase
               .from('inventory_items')
               .update({ image_url: imageUrl })
-              .eq('id', data.id);
+              .eq('group_id', groupId);
           }
         }
       }
       
       // Log activity
-      const truckName = data.trucks?.name || null;
+      const truckName = data[0].trucks?.name || null;
       await supabase.from('activity_logs').insert({
         company_id: userProfile.company_id,
         user_id: user.id,
         action: 'added',
         details: {
-          item_name: data.name,
-          item_id: data.id,
-          serial_number: data.serial_number,
-          condition: data.condition,
-          location: data.location_type === 'warehouse' ? 'Warehouse' : truckName
+          item_name: data[0].name,
+          item_id: data[0].id,
+          group_id: groupId,
+          quantity: qty,
+          serial_number: data[0].serial_number,
+          condition: data[0].condition,
+          location: data[0].location_type === 'warehouse' ? 'Warehouse' : truckName
         }
       });
 
-      const newInventoryItem: InventoryItem = {
-        id: data.id,
-        name: data.name,
-        description: data.description,
-        categoryId: data.category_id,
-        barcode: data.barcode,
+      const newItems: InventoryItem[] = data.map(item => ({
+        id: item.id,
+        name: item.name,
+        description: item.description,
+        categoryId: item.category_id,
+        barcode: item.barcode,
         quantity: 1,
         minQuantity: 0,
-        price: data.unit_price,
-        location: data.location,
-        image_url: imageUrl || data.image_url,
-        createdAt: new Date(data.created_at),
-        updatedAt: new Date(data.updated_at),
-        serialNumber: data.serial_number,
-        condition: data.condition,
-        locationType: data.location_type,
-        assignedTruckId: data.assigned_truck_id,
-        assignedTruckName: data.trucks?.name
-      };
+        price: item.unit_price,
+        location: item.location,
+        image_url: imageUrl || item.image_url,
+        createdAt: new Date(item.created_at),
+        updatedAt: new Date(item.updated_at),
+        serialNumber: item.serial_number,
+        condition: item.condition,
+        locationType: item.location_type,
+        assignedTruckId: item.assigned_truck_id,
+        assignedTruckName: item.trucks?.name,
+        groupId: item.group_id
+      }));
       
-      setItems(prev => [newInventoryItem, ...prev]);
+      setItems(prev => [...newItems, ...prev]);
       setItemForm({
         name: '',
         description: '',
@@ -330,11 +361,12 @@ export const InventoryManager: React.FC = () => {
         locationType: 'warehouse',
         assignedTruckId: '',
         price: 0,
+        quantity: 1,
         image: null
       });
       setShowAddForm(false);
       
-      toast({ title: "Success", description: "Tool added successfully" });
+      toast({ title: "Success", description: `${qty > 1 ? qty + ' tools' : 'Tool'} added successfully` });
     } catch (error: any) {
       toast({
         title: "Error",
@@ -387,66 +419,130 @@ export const InventoryManager: React.FC = () => {
   };
 
   const transferTool = async () => {
-    if (!transferItem || !userProfile?.company_id) return;
+    if (!userProfile?.company_id) return;
+    if (!transferItem && !transferGroup) return;
 
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) return;
 
     try {
-      // Determine from and to locations
-      const fromLocation = transferItem.locationType === 'warehouse' 
-        ? 'Warehouse' 
-        : transferItem.assignedTruckName || 'Unknown';
       const toTruck = trucks.find(t => t.id === transferTo.truckId);
       const toLocation = transferTo.type === 'warehouse' ? 'Warehouse' : toTruck?.name || 'Unknown';
 
-      const updateData = {
-        location_type: transferTo.type,
-        assigned_truck_id: transferTo.type === 'truck' ? transferTo.truckId : null,
-        assigned_at: new Date().toISOString(),
-        assigned_by: user.id,
-        location: transferTo.type === 'warehouse' ? 'Warehouse' : null
-      };
+      // Group transfer — move N items from same group
+      if (transferGroup) {
+        const qty = Math.min(transferQuantity, transferGroup.items.length);
+        const itemsToTransfer = transferGroup.items.slice(0, qty);
 
-      const { error } = await supabase
-        .from('inventory_items')
-        .update(updateData)
-        .eq('id', transferItem.id);
+        const fromLocation = transferGroup.locationType === 'warehouse' 
+          ? 'Warehouse' 
+          : transferGroup.assignedTruckName || 'Unknown';
 
-      if (error) throw error;
+        const updateData = {
+          location_type: transferTo.type,
+          assigned_truck_id: transferTo.type === 'truck' ? transferTo.truckId : null,
+          assigned_at: new Date().toISOString(),
+          assigned_by: user.id,
+          location: transferTo.type === 'warehouse' ? 'Warehouse' : null
+        };
 
-      // Log transfer activity
-      await supabase.from('activity_logs').insert({
-        company_id: userProfile.company_id,
-        user_id: user.id,
-        action: 'transferred',
-        details: {
-          item_name: transferItem.name,
-          item_id: transferItem.id,
-          serial_number: transferItem.serialNumber,
-          from: fromLocation,
-          to: toLocation
-        }
-      });
+        const { error } = await supabase
+          .from('inventory_items')
+          .update(updateData)
+          .in('id', itemsToTransfer.map(i => i.id));
 
-      const truck = trucks.find(t => t.id === transferTo.truckId);
-      setItems(prev => prev.map(item => 
-        item.id === transferItem.id 
-          ? { 
-              ...item, 
-              locationType: transferTo.type,
-              assignedTruckId: transferTo.type === 'truck' ? transferTo.truckId : undefined,
-              assignedTruckName: truck?.name,
-              assignedAt: new Date()
-            } 
-          : item
-      ));
+        if (error) throw error;
 
-      toast({ 
-        title: "Success", 
-        description: `Tool transferred to ${transferTo.type === 'warehouse' ? 'Warehouse' : truck?.name}` 
-      });
-      setTransferItem(null);
+        // Log transfer activity
+        await supabase.from('activity_logs').insert({
+          company_id: userProfile.company_id,
+          user_id: user.id,
+          action: 'transferred',
+          details: {
+            item_name: transferGroup.name,
+            group_id: transferGroup.groupId,
+            quantity: qty,
+            from: fromLocation,
+            to: toLocation
+          }
+        });
+
+        // Update local state
+        const transferredIds = new Set(itemsToTransfer.map(i => i.id));
+        setItems(prev => prev.map(item => 
+          transferredIds.has(item.id)
+            ? { 
+                ...item, 
+                locationType: transferTo.type,
+                assignedTruckId: transferTo.type === 'truck' ? transferTo.truckId : undefined,
+                assignedTruckName: toTruck?.name,
+                assignedAt: new Date()
+              } 
+            : item
+        ));
+
+        toast({ 
+          title: "Success", 
+          description: `${qty} × ${transferGroup.name} transferred to ${toLocation}` 
+        });
+        setTransferGroup(null);
+        setTransferQuantity(1);
+      }
+
+      // Single item transfer (from expanded group)
+      if (transferItem) {
+        const fromLocation = transferItem.locationType === 'warehouse' 
+          ? 'Warehouse' 
+          : transferItem.assignedTruckName || 'Unknown';
+
+        const updateData = {
+          location_type: transferTo.type,
+          assigned_truck_id: transferTo.type === 'truck' ? transferTo.truckId : null,
+          assigned_at: new Date().toISOString(),
+          assigned_by: user.id,
+          location: transferTo.type === 'warehouse' ? 'Warehouse' : null
+        };
+
+        const { error } = await supabase
+          .from('inventory_items')
+          .update(updateData)
+          .eq('id', transferItem.id);
+
+        if (error) throw error;
+
+        // Log transfer activity
+        await supabase.from('activity_logs').insert({
+          company_id: userProfile.company_id,
+          user_id: user.id,
+          action: 'transferred',
+          details: {
+            item_name: transferItem.name,
+            item_id: transferItem.id,
+            serial_number: transferItem.serialNumber,
+            from: fromLocation,
+            to: toLocation
+          }
+        });
+
+        const truck = trucks.find(t => t.id === transferTo.truckId);
+        setItems(prev => prev.map(item => 
+          item.id === transferItem.id 
+            ? { 
+                ...item, 
+                locationType: transferTo.type,
+                assignedTruckId: transferTo.type === 'truck' ? transferTo.truckId : undefined,
+                assignedTruckName: truck?.name,
+                assignedAt: new Date()
+              } 
+            : item
+        ));
+
+        toast({ 
+          title: "Success", 
+          description: `Tool transferred to ${transferTo.type === 'warehouse' ? 'Warehouse' : truck?.name}` 
+        });
+        setTransferItem(null);
+      }
     } catch (error: any) {
       toast({ title: "Error", description: error.message || "Failed to transfer tool", variant: "destructive" });
     }
@@ -579,6 +675,96 @@ export const InventoryManager: React.FC = () => {
     return { icon: Truck, text: item.assignedTruckName || 'Unknown Truck', color: 'text-green-600' };
   };
 
+  const deleteGroup = async (group: GroupedTool) => {
+    const count = group.items.length;
+    if (!confirm(`Are you sure you want to delete all ${count} "${group.name}" items?`)) return;
+    
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      
+      if (user && userProfile?.company_id) {
+        await supabase.from('activity_logs').insert({
+          company_id: userProfile.company_id,
+          user_id: user.id,
+          action: 'deleted',
+          details: {
+            item_name: group.name,
+            group_id: group.groupId,
+            quantity: count,
+            condition: group.condition,
+            location: group.locationType === 'warehouse' ? 'Warehouse' : group.assignedTruckName
+          }
+        });
+      }
+
+      const ids = group.items.map(i => i.id);
+      const { error } = await supabase
+        .from('inventory_items')
+        .delete()
+        .in('id', ids);
+
+      if (error) throw error;
+
+      // Clean up images
+      for (const item of group.items) {
+        if (item.image_url) {
+          await deleteItemImage(item.image_url);
+          break; // All share same image, only delete once
+        }
+      }
+      
+      setItems(prev => prev.filter(item => !ids.includes(item.id)));
+      toast({ title: "Success", description: `${count} tools deleted successfully` });
+    } catch (error) {
+      toast({ title: "Error", description: "Failed to delete tools", variant: "destructive" });
+    }
+  };
+
+  const toggleGroupExpanded = (groupKey: string) => {
+    setExpandedGroups(prev => {
+      const next = new Set(prev);
+      if (next.has(groupKey)) {
+        next.delete(groupKey);
+      } else {
+        next.add(groupKey);
+      }
+      return next;
+    });
+  };
+
+  // Group items by group_id + locationType + assignedTruckId for display
+  const groupItems = (itemsList: InventoryItem[]): GroupedTool[] => {
+    const groups = new Map<string, GroupedTool>();
+    
+    for (const item of itemsList) {
+      // Key: group_id + location_type + truck_id (so same tool in warehouse vs truck shows separately)
+      const groupKey = `${item.groupId || item.id}_${item.locationType}_${item.assignedTruckId || 'warehouse'}`;
+      
+      if (groups.has(groupKey)) {
+        const group = groups.get(groupKey)!;
+        group.items.push(item);
+        group.quantity = group.items.length;
+      } else {
+        groups.set(groupKey, {
+          groupId: item.groupId || item.id,
+          name: item.name,
+          description: item.description,
+          categoryId: item.categoryId,
+          condition: item.condition || 'good',
+          locationType: item.locationType || 'warehouse',
+          assignedTruckId: item.assignedTruckId,
+          assignedTruckName: item.assignedTruckName,
+          image_url: item.image_url,
+          price: item.price,
+          items: [item],
+          quantity: 1
+        });
+      }
+    }
+    
+    return Array.from(groups.values());
+  };
+
   // Filter and sort items
   const filteredItems = items
     .filter(item => {
@@ -620,6 +806,26 @@ export const InventoryManager: React.FC = () => {
       }
       return sortDirection === 'asc' ? comparison : -comparison;
     });
+
+  // Group the filtered items for display
+  const groupedTools = groupItems(filteredItems).sort((a, b) => {
+    let comparison = 0;
+    switch (sortField) {
+      case 'name':
+        comparison = a.name.localeCompare(b.name);
+        break;
+      case 'location':
+        comparison = (a.locationType || '').localeCompare(b.locationType || '');
+        break;
+      case 'condition':
+        comparison = (a.condition || '').localeCompare(b.condition || '');
+        break;
+      case 'category':
+        comparison = getCategoryName(a.categoryId).localeCompare(getCategoryName(b.categoryId));
+        break;
+    }
+    return sortDirection === 'asc' ? comparison : -comparison;
+  });
 
   const handleSort = (field: typeof sortField) => {
     if (sortField === field) {
@@ -754,6 +960,22 @@ export const InventoryManager: React.FC = () => {
                   value={itemForm.price}
                   onChange={(e) => setItemForm(prev => ({ ...prev, price: parseFloat(e.target.value) || 0 }))}
                 />
+              </div>
+              <div>
+                <Label htmlFor="quantity">Quantity</Label>
+                <Input
+                  id="quantity"
+                  type="number"
+                  min="1"
+                  max="500"
+                  value={itemForm.quantity}
+                  onChange={(e) => setItemForm(prev => ({ ...prev, quantity: parseInt(e.target.value) || 1 }))}
+                />
+                {itemForm.quantity > 1 && (
+                  <p className="text-xs text-blue-600 mt-1">
+                    Will create {itemForm.quantity} individual items (serial # and barcode ignored for qty &gt; 1)
+                  </p>
+                )}
               </div>
               <div>
                 <Label htmlFor="location-type">Initial Location *</Label>
@@ -943,7 +1165,7 @@ export const InventoryManager: React.FC = () => {
         </Dialog>
       )}
 
-      {/* Transfer Dialog */}
+      {/* Transfer Dialog - Single Item */}
       {transferItem && (
         <Dialog open={!!transferItem} onOpenChange={() => setTransferItem(null)}>
           <DialogContent>
@@ -1000,6 +1222,80 @@ export const InventoryManager: React.FC = () => {
             <DialogFooter>
               <Button onClick={() => setTransferItem(null)} variant="outline">Cancel</Button>
               <Button onClick={transferTool}>Confirm Transfer</Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      )}
+
+      {/* Transfer Dialog - Group (choose quantity) */}
+      {transferGroup && (
+        <Dialog open={!!transferGroup} onOpenChange={() => { setTransferGroup(null); setTransferQuantity(1); }}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2">
+                <ArrowRightLeft className="h-5 w-5" />
+                Transfer Tools
+              </DialogTitle>
+              <DialogDescription>
+                Move "{transferGroup.name}" ({transferGroup.quantity} available) to a new location
+              </DialogDescription>
+            </DialogHeader>
+            <div className="space-y-4 py-4">
+              <div className="p-3 bg-gray-50 dark:bg-gray-800 rounded-lg">
+                <p className="text-sm text-gray-600 dark:text-gray-400">Current Location:</p>
+                <p className="font-medium">
+                  {transferGroup.locationType === 'warehouse' ? 'Warehouse' : transferGroup.assignedTruckName}
+                </p>
+                <p className="text-sm text-gray-500 mt-1">Available: {transferGroup.quantity} items</p>
+              </div>
+              <div>
+                <Label htmlFor="transfer-qty">How many to transfer?</Label>
+                <Input
+                  id="transfer-qty"
+                  type="number"
+                  min={1}
+                  max={transferGroup.quantity}
+                  value={transferQuantity}
+                  onChange={(e) => setTransferQuantity(Math.min(parseInt(e.target.value) || 1, transferGroup.quantity))}
+                />
+              </div>
+              <div>
+                <Label>Transfer To</Label>
+                <Select 
+                  value={transferTo.type === 'warehouse' ? 'warehouse' : transferTo.truckId} 
+                  onValueChange={(value) => {
+                    if (value === 'warehouse') {
+                      setTransferTo({ type: 'warehouse' });
+                    } else {
+                      setTransferTo({ type: 'truck', truckId: value });
+                    }
+                  }}
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder="Select destination" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="warehouse" disabled={transferGroup.locationType === 'warehouse'}>
+                      <div className="flex items-center gap-2">
+                        <Warehouse className="h-4 w-4" />
+                        Warehouse
+                      </div>
+                    </SelectItem>
+                    {trucks.map((truck) => (
+                      <SelectItem key={truck.id} value={truck.id} disabled={truck.id === transferGroup.assignedTruckId}>
+                        <div className="flex items-center gap-2">
+                          <Truck className="h-4 w-4" />
+                          {truck.name} ({truck.identifier})
+                        </div>
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+            <DialogFooter>
+              <Button onClick={() => { setTransferGroup(null); setTransferQuantity(1); }} variant="outline">Cancel</Button>
+              <Button onClick={transferTool}>Transfer {transferQuantity} Item{transferQuantity > 1 ? 's' : ''}</Button>
             </DialogFooter>
           </DialogContent>
         </Dialog>
@@ -1065,7 +1361,7 @@ export const InventoryManager: React.FC = () => {
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center justify-between">
-            <span>Tools ({filteredItems.length})</span>
+            <span>Tools ({filteredItems.length} items, {groupedTools.length} groups)</span>
           </CardTitle>
         </CardHeader>
         <CardContent>
@@ -1082,7 +1378,7 @@ export const InventoryManager: React.FC = () => {
                       Name <SortIcon field="name" />
                     </div>
                   </TableHead>
-                  <TableHead>Serial #</TableHead>
+                  <TableHead className="text-center">Qty</TableHead>
                   <TableHead 
                     className="cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-700"
                     onClick={() => handleSort('category')}
@@ -1111,83 +1407,180 @@ export const InventoryManager: React.FC = () => {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {filteredItems.length === 0 ? (
+                {groupedTools.length === 0 ? (
                   <TableRow>
                     <TableCell colSpan={7} className="text-center py-8 text-gray-500">
                       No tools found. Add your first tool above.
                     </TableCell>
                   </TableRow>
                 ) : (
-                  filteredItems.map((item) => {
-                    const location = getLocationDisplay(item);
-                    const LocationIcon = location.icon;
+                  groupedTools.map((group) => {
+                    const groupKey = `${group.groupId}_${group.locationType}_${group.assignedTruckId || 'warehouse'}`;
+                    const isExpanded = expandedGroups.has(groupKey);
+                    const GroupLocationIcon = group.locationType === 'warehouse' ? Warehouse : Truck;
+                    const locationColor = group.locationType === 'warehouse' ? 'text-blue-600' : 'text-green-600';
+                    const locationText = group.locationType === 'warehouse' ? 'Warehouse' : group.assignedTruckName || 'Unknown Truck';
+
                     return (
-                      <TableRow key={item.id} className="hover:bg-gray-50 dark:hover:bg-gray-800">
-                        <TableCell>
-                          <div className="w-10 h-10 bg-gray-100 dark:bg-gray-700 rounded-lg flex items-center justify-center overflow-hidden">
-                            {item.image_url ? (
-                              <img src={item.image_url} alt={item.name} className="w-full h-full object-cover" />
-                            ) : (
-                              <Image className="h-5 w-5 text-gray-400" />
-                            )}
-                          </div>
-                        </TableCell>
-                        <TableCell>
-                          <div>
-                            <p className="font-medium">{item.name}</p>
-                            {item.barcode && <p className="text-xs text-gray-500">BC: {item.barcode}</p>}
-                          </div>
-                        </TableCell>
-                        <TableCell className="font-mono text-sm">
-                          {item.serialNumber || '-'}
-                        </TableCell>
-                        <TableCell>
-                          <Badge 
-                            style={{ backgroundColor: getCategoryColor(item.categoryId) }}
-                            className="text-white"
-                          >
-                            {getCategoryName(item.categoryId)}
-                          </Badge>
-                        </TableCell>
-                        <TableCell>
-                          <Badge className={getConditionBadge(item.condition || 'good')}>
-                            {(item.condition || 'good').charAt(0).toUpperCase() + (item.condition || 'good').slice(1)}
-                          </Badge>
-                        </TableCell>
-                        <TableCell>
-                          <div className={`flex items-center gap-1 ${location.color}`}>
-                            <LocationIcon className="h-4 w-4" />
-                            <span className="text-sm">{location.text}</span>
-                          </div>
-                        </TableCell>
-                        <TableCell className="text-right">
-                          <DropdownMenu>
-                            <DropdownMenuTrigger asChild>
-                              <Button variant="ghost" size="sm">
-                                <MoreHorizontal className="h-4 w-4" />
-                              </Button>
-                            </DropdownMenuTrigger>
-                            <DropdownMenuContent align="end">
-                              <DropdownMenuItem onClick={() => setTransferItem(item)}>
-                                <ArrowRightLeft className="h-4 w-4 mr-2" />
-                                Transfer
-                              </DropdownMenuItem>
-                              <DropdownMenuItem onClick={() => startEdit(item)}>
-                                <Edit className="h-4 w-4 mr-2" />
-                                Edit
-                              </DropdownMenuItem>
-                              <DropdownMenuSeparator />
-                              <DropdownMenuItem 
-                                onClick={() => deleteItem(item.id, item.name)}
-                                className="text-red-600"
-                              >
-                                <Trash2 className="h-4 w-4 mr-2" />
-                                Delete
-                              </DropdownMenuItem>
-                            </DropdownMenuContent>
-                          </DropdownMenu>
-                        </TableCell>
-                      </TableRow>
+                      <React.Fragment key={groupKey}>
+                        {/* Group Row */}
+                        <TableRow 
+                          className={`hover:bg-gray-50 dark:hover:bg-gray-800 ${group.quantity > 1 ? 'cursor-pointer' : ''}`}
+                          onClick={() => group.quantity > 1 ? toggleGroupExpanded(groupKey) : undefined}
+                        >
+                          <TableCell>
+                            <div className="w-10 h-10 bg-gray-100 dark:bg-gray-700 rounded-lg flex items-center justify-center overflow-hidden">
+                              {group.image_url ? (
+                                <img src={group.image_url} alt={group.name} className="w-full h-full object-cover" />
+                              ) : (
+                                <Image className="h-5 w-5 text-gray-400" />
+                              )}
+                            </div>
+                          </TableCell>
+                          <TableCell>
+                            <div className="flex items-center gap-2">
+                              {group.quantity > 1 && (
+                                isExpanded ? <ChevronUp className="h-4 w-4 text-gray-400 flex-shrink-0" /> : <ChevronDown className="h-4 w-4 text-gray-400 flex-shrink-0" />
+                              )}
+                              <div>
+                                <p className="font-medium">{group.name}</p>
+                                {group.quantity === 1 && group.items[0]?.barcode && (
+                                  <p className="text-xs text-gray-500">BC: {group.items[0].barcode}</p>
+                                )}
+                              </div>
+                            </div>
+                          </TableCell>
+                          <TableCell className="text-center">
+                            <Badge variant={group.quantity > 1 ? 'default' : 'secondary'} className={group.quantity > 1 ? 'bg-blue-600' : ''}>
+                              {group.quantity}
+                            </Badge>
+                          </TableCell>
+                          <TableCell>
+                            <Badge 
+                              style={{ backgroundColor: getCategoryColor(group.categoryId) }}
+                              className="text-white"
+                            >
+                              {getCategoryName(group.categoryId)}
+                            </Badge>
+                          </TableCell>
+                          <TableCell>
+                            <Badge className={getConditionBadge(group.condition)}>
+                              {group.condition.charAt(0).toUpperCase() + group.condition.slice(1)}
+                            </Badge>
+                          </TableCell>
+                          <TableCell>
+                            <div className={`flex items-center gap-1 ${locationColor}`}>
+                              <GroupLocationIcon className="h-4 w-4" />
+                              <span className="text-sm">{locationText}</span>
+                            </div>
+                          </TableCell>
+                          <TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
+                            <DropdownMenu>
+                              <DropdownMenuTrigger asChild>
+                                <Button variant="ghost" size="sm">
+                                  <MoreHorizontal className="h-4 w-4" />
+                                </Button>
+                              </DropdownMenuTrigger>
+                              <DropdownMenuContent align="end">
+                                {group.quantity > 1 ? (
+                                  <>
+                                    <DropdownMenuItem onClick={() => { setTransferGroup(group); setTransferQuantity(1); }}>
+                                      <ArrowRightLeft className="h-4 w-4 mr-2" />
+                                      Transfer (choose qty)
+                                    </DropdownMenuItem>
+                                    <DropdownMenuItem onClick={() => startEdit(group.items[0])}>
+                                      <Edit className="h-4 w-4 mr-2" />
+                                      Edit Details
+                                    </DropdownMenuItem>
+                                    <DropdownMenuItem onClick={() => toggleGroupExpanded(groupKey)}>
+                                      {isExpanded ? <ChevronUp className="h-4 w-4 mr-2" /> : <ChevronDown className="h-4 w-4 mr-2" />}
+                                      {isExpanded ? 'Collapse' : 'Expand'} Individual Items
+                                    </DropdownMenuItem>
+                                    <DropdownMenuSeparator />
+                                    <DropdownMenuItem 
+                                      onClick={() => deleteGroup(group)}
+                                      className="text-red-600"
+                                    >
+                                      <Trash2 className="h-4 w-4 mr-2" />
+                                      Delete All ({group.quantity})
+                                    </DropdownMenuItem>
+                                  </>
+                                ) : (
+                                  <>
+                                    <DropdownMenuItem onClick={() => setTransferItem(group.items[0])}>
+                                      <ArrowRightLeft className="h-4 w-4 mr-2" />
+                                      Transfer
+                                    </DropdownMenuItem>
+                                    <DropdownMenuItem onClick={() => startEdit(group.items[0])}>
+                                      <Edit className="h-4 w-4 mr-2" />
+                                      Edit
+                                    </DropdownMenuItem>
+                                    <DropdownMenuSeparator />
+                                    <DropdownMenuItem 
+                                      onClick={() => deleteItem(group.items[0].id, group.items[0].name)}
+                                      className="text-red-600"
+                                    >
+                                      <Trash2 className="h-4 w-4 mr-2" />
+                                      Delete
+                                    </DropdownMenuItem>
+                                  </>
+                                )}
+                              </DropdownMenuContent>
+                            </DropdownMenu>
+                          </TableCell>
+                        </TableRow>
+
+                        {/* Expanded Individual Items */}
+                        {isExpanded && group.quantity > 1 && group.items.map((item, idx) => (
+                          <TableRow key={item.id} className="bg-gray-50/50 dark:bg-gray-900/50">
+                            <TableCell>
+                              <div className="w-6 h-6 ml-2 rounded bg-gray-200 dark:bg-gray-700 flex items-center justify-center text-xs text-gray-500">
+                                {idx + 1}
+                              </div>
+                            </TableCell>
+                            <TableCell>
+                              <p className="text-sm text-gray-600 pl-6">
+                                {item.serialNumber ? `SN: ${item.serialNumber}` : item.barcode ? `BC: ${item.barcode}` : `Item #${idx + 1}`}
+                              </p>
+                            </TableCell>
+                            <TableCell></TableCell>
+                            <TableCell></TableCell>
+                            <TableCell>
+                              <Badge className={`text-xs ${getConditionBadge(item.condition || 'good')}`}>
+                                {(item.condition || 'good').charAt(0).toUpperCase() + (item.condition || 'good').slice(1)}
+                              </Badge>
+                            </TableCell>
+                            <TableCell></TableCell>
+                            <TableCell className="text-right">
+                              <DropdownMenu>
+                                <DropdownMenuTrigger asChild>
+                                  <Button variant="ghost" size="sm">
+                                    <MoreHorizontal className="h-3 w-3" />
+                                  </Button>
+                                </DropdownMenuTrigger>
+                                <DropdownMenuContent align="end">
+                                  <DropdownMenuItem onClick={() => setTransferItem(item)}>
+                                    <ArrowRightLeft className="h-4 w-4 mr-2" />
+                                    Transfer This One
+                                  </DropdownMenuItem>
+                                  <DropdownMenuItem onClick={() => startEdit(item)}>
+                                    <Edit className="h-4 w-4 mr-2" />
+                                    Edit
+                                  </DropdownMenuItem>
+                                  <DropdownMenuSeparator />
+                                  <DropdownMenuItem 
+                                    onClick={() => deleteItem(item.id, item.name)}
+                                    className="text-red-600"
+                                  >
+                                    <Trash2 className="h-4 w-4 mr-2" />
+                                    Delete
+                                  </DropdownMenuItem>
+                                </DropdownMenuContent>
+                              </DropdownMenu>
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </React.Fragment>
                     );
                   })
                 )}

@@ -21,6 +21,7 @@ interface ImportItem {
   serial_number?: string;
   condition?: 'good' | 'fair' | 'poor' | 'damaged';
   unit_price?: number;
+  quantity?: number;
   image?: File | null;
 }
 
@@ -40,8 +41,8 @@ export const BulkImport: React.FC<BulkImportProps> = ({ categories, onImportComp
 
   // Required and optional headers for validation
   const REQUIRED_HEADERS = ['name', 'category'];
-  const VALID_HEADERS = ['name', 'category', 'serial_number', 'description', 'barcode', 'condition', 'unit_price'];
-  const OLD_FORMAT_HEADERS = ['quantity', 'min_quantity', 'location']; // Old consumable format
+  const VALID_HEADERS = ['name', 'category', 'serial_number', 'description', 'barcode', 'condition', 'unit_price', 'quantity'];
+  const OLD_FORMAT_HEADERS = ['min_quantity', 'location']; // Old consumable format
 
   const normalizeHeader = (header: string): string => {
     return header.toLowerCase().trim().replace(/\s+/g, '_');
@@ -143,6 +144,7 @@ Valid columns are: Name, Category, Serial_Number, Description, Barcode, Conditio
       }
 
       const unit_price = parseFloat(unitPrice) || 0;
+      const qty = parseInt(getRowValue(row, 'quantity')) || 1;
 
       validItems.push({
         name: name.toString().trim(),
@@ -151,7 +153,8 @@ Valid columns are: Name, Category, Serial_Number, Description, Barcode, Conditio
         barcode: barcode?.toString().trim(),
         serial_number: serialNumber?.toString().trim(),
         condition: condition as 'good' | 'fair' | 'poor' | 'damaged',
-        unit_price
+        unit_price,
+        quantity: Math.max(1, Math.min(qty, 500))
       });
     });
 
@@ -231,42 +234,62 @@ Valid columns are: Name, Category, Serial_Number, Description, Barcode, Conditio
 
     setImporting(true);
     try {
-      // First, insert all items without images - each row is ONE individual tool
-      const itemsToInsert = importData.map(item => ({
-        name: item.name,
-        description: item.description,
-        category_id: item.category_id,
-        barcode: item.barcode || null,
-        serial_number: item.serial_number || null,
-        condition: item.condition || 'good',
-        location_type: 'warehouse', // All imported tools go to warehouse by default
-        assigned_truck_id: null,
-        quantity: 1, // Each row is ONE individual tool
-        min_quantity: 0,
-        unit_price: item.unit_price,
-        location: 'Warehouse',
-        company_id: userProfile.company_id
-      }));
+      // Expand items: each row can have a quantity, creating N individual records with same group_id
+      const itemsToInsert: any[] = [];
+      const groupMap: { index: number; groupId: string; qty: number }[] = [];
 
-      const { data: insertedItems, error } = await supabase
-        .from('inventory_items')
-        .insert(itemsToInsert)
-        .select();
+      importData.forEach((item, idx) => {
+        const qty = item.quantity || 1;
+        const groupId = crypto.randomUUID();
+        groupMap.push({ index: idx, groupId, qty });
 
-      if (error) throw error;
+        for (let i = 0; i < qty; i++) {
+          itemsToInsert.push({
+            name: item.name,
+            description: item.description,
+            category_id: item.category_id,
+            barcode: qty === 1 ? (item.barcode || null) : null, // Only set barcode if single
+            serial_number: qty === 1 ? (item.serial_number || null) : null, // Only set serial if single
+            condition: item.condition || 'good',
+            location_type: 'warehouse',
+            assigned_truck_id: null,
+            quantity: 1,
+            min_quantity: 0,
+            unit_price: item.unit_price,
+            location: 'Warehouse',
+            company_id: userProfile.company_id,
+            group_id: groupId
+          });
+        }
+      });
 
-      // Log activity for bulk import
+      const totalItems = itemsToInsert.length;
+
+      // Insert in batches of 100 to avoid Supabase limits
+      const insertedItems: any[] = [];
+      for (let i = 0; i < itemsToInsert.length; i += 100) {
+        const batch = itemsToInsert.slice(i, i + 100);
+        const { data, error } = await supabase
+          .from('inventory_items')
+          .insert(batch)
+          .select();
+
+        if (error) throw error;
+        if (data) insertedItems.push(...data);
+      }
+
+      // Log activity per group (not per individual item)
       const { data: { user } } = await supabase.auth.getUser();
-      if (user && insertedItems) {
-        const activityLogs = insertedItems.map(item => ({
+      if (user) {
+        const activityLogs = groupMap.map(g => ({
           company_id: userProfile.company_id,
           user_id: user.id,
           action: 'added',
           details: {
-            item_name: item.name,
-            item_id: item.id,
-            serial_number: item.serial_number,
-            condition: item.condition,
+            item_name: importData[g.index].name,
+            group_id: g.groupId,
+            quantity: g.qty,
+            condition: importData[g.index].condition || 'good',
             location: 'Warehouse',
             import_method: 'bulk'
           }
@@ -275,40 +298,34 @@ Valid columns are: Name, Category, Serial_Number, Description, Barcode, Conditio
         await supabase.from('activity_logs').insert(activityLogs);
       }
 
-      // Now handle image uploads for items that have images
-      const itemsWithImages = importData.filter(item => item.image);
-      
-      for (let i = 0; i < itemsWithImages.length; i++) {
-        const item = itemsWithImages[i];
-        const insertedItem = insertedItems?.[i];
-        
-        if (insertedItem && item.image) {
-          try {
-            // Validate image file
-            const validation = validateImageFile(item.image);
-            if (!validation.valid) {
-              console.warn(`Invalid image for item ${item.name}: ${validation.error}`);
-              continue;
-            }
+      // Handle image uploads — apply image to all items in the group
+      for (let idx = 0; idx < importData.length; idx++) {
+        const item = importData[idx];
+        if (!item.image) continue;
 
-            // Upload image
-            const imageUrl = await uploadItemImage(item.image, insertedItem.id);
-            if (imageUrl) {
-              // Update item with image URL
-              await supabase
-                .from('inventory_items')
-                .update({ image_url: imageUrl })
-                .eq('id', insertedItem.id);
-            }
-          } catch (imageError) {
-            console.error(`Failed to upload image for item ${item.name}:`, imageError);
+        const group = groupMap[idx];
+        const firstGroupItem = insertedItems.find(i => i.group_id === group.groupId);
+        if (!firstGroupItem) continue;
+
+        try {
+          const validation = validateImageFile(item.image);
+          if (!validation.valid) continue;
+
+          const imageUrl = await uploadItemImage(item.image, firstGroupItem.id);
+          if (imageUrl) {
+            await supabase
+              .from('inventory_items')
+              .update({ image_url: imageUrl })
+              .eq('group_id', group.groupId);
           }
+        } catch (imageError) {
+          console.error(`Failed to upload image for item ${item.name}:`, imageError);
         }
       }
 
       toast({
         title: "Success",
-        description: `Successfully imported ${importData.length} items`,
+        description: `Successfully imported ${totalItems} items from ${importData.length} rows`,
       });
 
       setImportData([]);
@@ -364,19 +381,20 @@ Valid columns are: Name, Category, Serial_Number, Description, Barcode, Conditio
             <AlertDescription>
               <p className="mb-2">Upload a CSV or Excel file with the following columns:</p>
               <div className="bg-gray-100 p-3 rounded-md font-mono text-sm mb-2">
-                Name, Category, Serial_Number, Description, Barcode, Condition, Unit_Price
+                Name, Category, Quantity, Serial_Number, Description, Barcode, Condition, Unit_Price
               </div>
               <ul className="list-disc list-inside mt-2 space-y-1">
                 <li><strong>Name</strong> (required) - Tool name</li>
                 <li><strong>Category</strong> (required) - Must match existing category</li>
-                <li><strong>Serial_Number</strong> (optional) - Unique identifier for the tool</li>
-                <li><strong>Barcode</strong> (optional) - Barcode number</li>
+                <li><strong>Quantity</strong> (optional) - How many of this tool (default: 1). E.g., 60 ladders creates 60 individual records grouped together</li>
+                <li><strong>Serial_Number</strong> (optional) - Only used when quantity is 1</li>
+                <li><strong>Barcode</strong> (optional) - Only used when quantity is 1</li>
                 <li><strong>Condition</strong> (optional) - good, fair, poor, or damaged (defaults to "good")</li>
                 <li><strong>Unit_Price</strong> (optional) - Price in dollars</li>
                 <li><strong>Description</strong> (optional)</li>
               </ul>
-              <p className="mt-3 text-sm text-orange-600 font-medium">⚠️ Do NOT include: Quantity, Min_Quantity, or Location columns (old format)</p>
-              <p className="mt-2 text-sm text-gray-600">Note: Each row represents ONE individual tool. All imported tools will be placed in the Warehouse.</p>
+              <p className="mt-3 text-sm text-blue-600 font-medium">💡 Use Quantity to add multiple identical tools at once (e.g., 60 ladders). They'll be grouped for easy management.</p>
+              <p className="mt-2 text-sm text-gray-600">Note: All imported tools will be placed in the Warehouse. Serial # and barcode are ignored when quantity &gt; 1.</p>
             </AlertDescription>
           </Alert>
 
@@ -408,7 +426,7 @@ Valid columns are: Name, Category, Serial_Number, Description, Barcode, Conditio
             <div className="space-y-4">
               <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
                 <h3 className="text-lg font-semibold">
-                  Preview ({importData.length} items)
+                  Preview ({importData.length} rows, {importData.reduce((sum, item) => sum + (item.quantity || 1), 0)} total items)
                 </h3>
                 <Button
                   onClick={importItems}
@@ -425,6 +443,7 @@ Valid columns are: Name, Category, Serial_Number, Description, Barcode, Conditio
                     <TableRow>
                       <TableHead>Name</TableHead>
                       <TableHead>Category</TableHead>
+                      <TableHead className="text-center">Qty</TableHead>
                       <TableHead>Serial #</TableHead>
                       <TableHead>Condition</TableHead>
                       <TableHead>Image</TableHead>
@@ -437,6 +456,11 @@ Valid columns are: Name, Category, Serial_Number, Description, Barcode, Conditio
                         <TableCell>
                           <Badge variant="outline">
                             {getCategoryName(item.category_id)}
+                          </Badge>
+                        </TableCell>
+                        <TableCell className="text-center">
+                          <Badge variant={item.quantity && item.quantity > 1 ? 'default' : 'secondary'} className={item.quantity && item.quantity > 1 ? 'bg-blue-600' : ''}>
+                            {item.quantity || 1}
                           </Badge>
                         </TableCell>
                         <TableCell className="font-mono text-sm">{item.serial_number || '-'}</TableCell>
