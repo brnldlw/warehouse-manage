@@ -68,6 +68,7 @@ export const InventoryManager: React.FC = () => {
   });
   const [loading, setLoading] = useState(false);
   const [editingItem, setEditingItem] = useState<InventoryItem | null>(null);
+  const [editingGroup, setEditingGroup] = useState<GroupedTool | null>(null);
   const [editForm, setEditForm] = useState({
     name: '',
     description: '',
@@ -76,6 +77,7 @@ export const InventoryManager: React.FC = () => {
     serialNumber: '',
     condition: 'good' as 'good' | 'fair' | 'poor' | 'damaged',
     price: 0,
+    quantity: 1,
     image: null as File | null
   });
   const [transferItem, setTransferItem] = useState<InventoryItem | null>(null);
@@ -558,8 +560,9 @@ export const InventoryManager: React.FC = () => {
     return category ? category.color : '#6B7280';
   };
 
-  const startEdit = (item: InventoryItem) => {
+  const startEdit = (item: InventoryItem, group?: GroupedTool) => {
     setEditingItem(item);
+    setEditingGroup(group || null);
     setEditForm({
       name: item.name,
       description: item.description || '',
@@ -568,12 +571,14 @@ export const InventoryManager: React.FC = () => {
       serialNumber: item.serialNumber || '',
       condition: item.condition || 'good',
       price: item.price,
+      quantity: group ? group.items.length : 1,
       image: null
     });
   };
 
   const cancelEdit = () => {
     setEditingItem(null);
+    setEditingGroup(null);
   };
 
   const updateItem = async () => {
@@ -584,73 +589,124 @@ export const InventoryManager: React.FC = () => {
       return;
     }
 
-    const duplicate = await checkForDuplicate(
-      editForm.serialNumber || null, 
-      editForm.barcode || null, 
-      editingItem.id
-    );
-    if (duplicate) {
-      toast({
-        title: "Error",
-        description: `Item with this ${duplicate.field === 'serial_number' ? 'serial number' : 'barcode'} already exists`,
-        variant: "destructive"
-      });
-      return;
-    }
-
     setLoading(true);
     try {
-      const updateData = {
-        name: editForm.name,
-        description: editForm.description,
-        category_id: editForm.categoryId,
-        barcode: editForm.barcode || null,
-        serial_number: editForm.serialNumber || null,
-        condition: editForm.condition,
-        unit_price: editForm.price
-      };
+      if (editingGroup) {
+        // --- GROUP EDIT ---
+        const baseData = {
+          name: editForm.name,
+          description: editForm.description || null,
+          category_id: editForm.categoryId,
+          condition: editForm.condition,
+          unit_price: editForm.price
+        };
 
-      const { error } = await supabase
-        .from('inventory_items')
-        .update(updateData)
-        .eq('id', editingItem.id);
+        // Update all existing items in the group
+        const groupItemIds = editingGroup.items.map(i => i.id);
+        const { error: updateError } = await supabase
+          .from('inventory_items')
+          .update(baseData)
+          .in('id', groupItemIds);
+        if (updateError) throw updateError;
 
-      if (error) throw error;
-
-      let imageUrl = editingItem.image_url;
-      if (editForm.image) {
-        const validation = validateImageFile(editForm.image);
-        if (validation.valid) {
-          if (editingItem.image_url) {
-            await deleteItemImage(editingItem.image_url);
-          }
-          imageUrl = await uploadItemImage(editForm.image, editingItem.id);
-          if (imageUrl) {
-            await supabase
-              .from('inventory_items')
-              .update({ image_url: imageUrl })
-              .eq('id', editingItem.id);
+        // Handle image update for every item in the group
+        if (editForm.image) {
+          const validation = validateImageFile(editForm.image);
+          if (validation.valid) {
+            const imageUrl = await uploadItemImage(editForm.image, editingItem.id);
+            if (imageUrl) {
+              await supabase
+                .from('inventory_items')
+                .update({ image_url: imageUrl })
+                .eq('group_id', editingGroup.groupId);
+            }
           }
         }
+
+        // Handle quantity changes
+        const currentQty = editingGroup.items.length;
+        const newQty = Math.max(1, editForm.quantity);
+        if (newQty > currentQty) {
+          const toAdd = newQty - currentQty;
+          const newItems = Array.from({ length: toAdd }, () => ({
+            ...baseData,
+            group_id: editingGroup.groupId,
+            company_id: userProfile?.company_id,
+            location_type: editingGroup.locationType,
+            assigned_truck_id: editingGroup.assignedTruckId || null,
+            serial_number: null,
+            barcode: null,
+            image_url: editingItem.image_url || null
+          }));
+          const { error: insertError } = await supabase
+            .from('inventory_items')
+            .insert(newItems);
+          if (insertError) throw insertError;
+        } else if (newQty < currentQty) {
+          const idsToRemove = groupItemIds.slice(newQty);
+          const { error: deleteError } = await supabase
+            .from('inventory_items')
+            .delete()
+            .in('id', idsToRemove);
+          if (deleteError) throw deleteError;
+        }
+
+        // Reload items to reflect all changes
+        await loadItems();
+        toast({ title: "Success", description: `Group updated — ${newQty} item${newQty !== 1 ? 's' : ''}` });
+      } else {
+        // --- SINGLE ITEM EDIT ---
+        const duplicate = await checkForDuplicate(
+          editForm.serialNumber || null,
+          editForm.barcode || null,
+          editingItem.id
+        );
+        if (duplicate) {
+          toast({
+            title: "Error",
+            description: `Item with this ${duplicate.field === 'serial_number' ? 'serial number' : 'barcode'} already exists`,
+            variant: "destructive"
+          });
+          setLoading(false);
+          return;
+        }
+
+        const updateData = {
+          name: editForm.name,
+          description: editForm.description,
+          category_id: editForm.categoryId,
+          barcode: editForm.barcode || null,
+          serial_number: editForm.serialNumber || null,
+          condition: editForm.condition,
+          unit_price: editForm.price
+        };
+
+        const { error } = await supabase
+          .from('inventory_items')
+          .update(updateData)
+          .eq('id', editingItem.id);
+        if (error) throw error;
+
+        let imageUrl = editingItem.image_url;
+        if (editForm.image) {
+          const validation = validateImageFile(editForm.image);
+          if (validation.valid) {
+            if (editingItem.image_url) await deleteItemImage(editingItem.image_url);
+            imageUrl = await uploadItemImage(editForm.image, editingItem.id);
+            if (imageUrl) {
+              await supabase.from('inventory_items').update({ image_url: imageUrl }).eq('id', editingItem.id);
+            }
+          }
+        }
+
+        setItems(prev => prev.map(item =>
+          item.id === editingItem.id
+            ? { ...item, name: editForm.name, description: editForm.description, categoryId: editForm.categoryId, barcode: editForm.barcode, serialNumber: editForm.serialNumber, condition: editForm.condition, price: editForm.price, image_url: imageUrl }
+            : item
+        ));
+        toast({ title: "Success", description: "Tool updated successfully" });
       }
 
-      setItems(prev => prev.map(item => 
-        item.id === editingItem.id 
-          ? { 
-              ...item, 
-              name: editForm.name,
-              description: editForm.description,
-              categoryId: editForm.categoryId,
-              barcode: editForm.barcode,
-              serialNumber: editForm.serialNumber,
-              condition: editForm.condition,
-              price: editForm.price,
-              image_url: imageUrl 
-            } 
-          : item
-      ));
-
-      toast({ title: "Success", description: "Tool updated successfully" });
       cancelEdit();
     } catch (error: any) {
       toast({ title: "Error", description: error.message || "Failed to update tool", variant: "destructive" });
@@ -1079,21 +1135,43 @@ export const InventoryManager: React.FC = () => {
                 />
               </div>
               <div>
-                <Label htmlFor="edit-serial">Serial Number</Label>
+                <Label htmlFor="edit-quantity">Quantity</Label>
                 <Input
-                  id="edit-serial"
-                  value={editForm.serialNumber}
-                  onChange={(e) => setEditForm(prev => ({ ...prev, serialNumber: e.target.value }))}
+                  id="edit-quantity"
+                  type="number"
+                  min={1}
+                  max={500}
+                  value={editForm.quantity}
+                  onChange={(e) => setEditForm(prev => ({ ...prev, quantity: Math.max(1, Math.min(500, parseInt(e.target.value) || 1)) }))}
                 />
+                {editingGroup && editForm.quantity !== editingGroup.items.length && (
+                  <p className="text-xs text-blue-600 mt-1">
+                    {editForm.quantity > editingGroup.items.length
+                      ? `+${editForm.quantity - editingGroup.items.length} items will be added`
+                      : `${editingGroup.items.length - editForm.quantity} items will be removed`}
+                  </p>
+                )}
               </div>
-              <div>
-                <Label htmlFor="edit-barcode">Barcode</Label>
-                <Input
-                  id="edit-barcode"
-                  value={editForm.barcode}
-                  onChange={(e) => setEditForm(prev => ({ ...prev, barcode: e.target.value }))}
-                />
-              </div>
+              {!editingGroup && (
+                <>
+                  <div>
+                    <Label htmlFor="edit-serial">Serial Number</Label>
+                    <Input
+                      id="edit-serial"
+                      value={editForm.serialNumber}
+                      onChange={(e) => setEditForm(prev => ({ ...prev, serialNumber: e.target.value }))}
+                    />
+                  </div>
+                  <div>
+                    <Label htmlFor="edit-barcode">Barcode</Label>
+                    <Input
+                      id="edit-barcode"
+                      value={editForm.barcode}
+                      onChange={(e) => setEditForm(prev => ({ ...prev, barcode: e.target.value }))}
+                    />
+                  </div>
+                </>
+              )}
               <div>
                 <Label htmlFor="edit-category">Category</Label>
                 <Select value={editForm.categoryId} onValueChange={(value) => setEditForm(prev => ({ ...prev, categoryId: value }))}>
@@ -1488,7 +1566,7 @@ export const InventoryManager: React.FC = () => {
                                       <ArrowRightLeft className="h-4 w-4 mr-2" />
                                       Transfer (choose qty)
                                     </DropdownMenuItem>
-                                    <DropdownMenuItem onClick={() => startEdit(group.items[0])}>
+                                    <DropdownMenuItem onClick={() => startEdit(group.items[0], group)}>
                                       <Edit className="h-4 w-4 mr-2" />
                                       Edit Details
                                     </DropdownMenuItem>
@@ -1511,7 +1589,7 @@ export const InventoryManager: React.FC = () => {
                                       <ArrowRightLeft className="h-4 w-4 mr-2" />
                                       Transfer
                                     </DropdownMenuItem>
-                                    <DropdownMenuItem onClick={() => startEdit(group.items[0])}>
+                                    <DropdownMenuItem onClick={() => startEdit(group.items[0], group)}>
                                       <Edit className="h-4 w-4 mr-2" />
                                       Edit
                                     </DropdownMenuItem>
