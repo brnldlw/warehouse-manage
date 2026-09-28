@@ -19,6 +19,7 @@ import { WarrantyTracker } from './WarrantyTracker';
 import { RefrigerantTracker } from './RefrigerantTracker';
 import { ReportsPanel } from './ReportsPanel';
 import { CreateRequest } from './CreateRequest';
+import { PrintInventory } from './PrintInventory';
 import { supabase } from '@/lib/supabase';
 export const AdminPanel: React.FC = () => {
   const [techCount, setTechCount] = useState(0);
@@ -122,6 +123,8 @@ export const AdminPanel: React.FC = () => {
         return <InventoryManager />;
       case 'categories':
         return <CategoryManager />;
+      case 'print':
+        return <PrintInventory />;
       case 'create-request':
         return <CreateRequest />;
       case 'fulfill':

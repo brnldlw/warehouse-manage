@@ -15,10 +15,17 @@ import { useAuth } from '@/contexts/AuthContext';
 import { 
   Package, Plus, Trash2, Upload, Image, X, Edit, 
   ArrowRightLeft, Warehouse, Truck, Search,
-  ChevronDown, ChevronUp, MoreHorizontal, Loader2
+  ChevronDown, ChevronUp, MoreHorizontal, Loader2, Printer, Download, FileText, FileSpreadsheet
 } from 'lucide-react';
 import { BulkImport } from './BulkImport';
 import { uploadItemImage, deleteItemImage, validateImageFile } from '@/lib/imageUtils';
+import { usePrint } from '@/hooks/use-print';
+import { PrintPortal } from './print/PrintPortal';
+import { InventoryReportDocument } from './print/InventoryReportDocument';
+import {
+  ALL_COLUMN_KEYS, ReportItem, ReportMeta, WAREHOUSE, downloadCsv, downloadXlsx, exportFileName,
+  formatDateTime, groupRows, summarizeItems,
+} from '@/lib/inventoryReport';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -94,7 +101,9 @@ export const InventoryManager: React.FC = () => {
   const [showAddForm, setShowAddForm] = useState(false);
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
   const [pageLoading, setPageLoading] = useState(true);
+  const [companyName, setCompanyName] = useState('');
   const { toast } = useToast();
+  const { printing, print } = usePrint();
 
   useEffect(() => {
     loadPageData();
@@ -103,10 +112,17 @@ export const InventoryManager: React.FC = () => {
   const loadPageData = async () => {
     setPageLoading(true);
     try {
-      await Promise.all([loadItems(), loadTrucks()]);
+      await Promise.all([loadItems(), loadTrucks(), loadCompanyName()]);
     } finally {
       setPageLoading(false);
     }
+  };
+
+  // Only used for the header of printed/exported lists.
+  const loadCompanyName = async () => {
+    if (!userProfile?.company_id) return;
+    const { data } = await supabase.from('companies').select('name').eq('id', userProfile.company_id).single();
+    setCompanyName(data?.name || '');
   };
 
   const loadTrucks = async () => {
@@ -892,6 +908,55 @@ export const InventoryManager: React.FC = () => {
     }
   };
 
+  // ---- Print / Export: exactly the filtered, sorted list on screen, one line per row shown ----
+  const toReportItem = (item: InventoryItem): ReportItem => {
+    const onTruck = item.locationType === 'truck' && !!item.assignedTruckId;
+    const price = item.price === null || item.price === undefined ? null : Number(item.price);
+    return {
+      id: item.id,
+      name: item.name,
+      categoryId: item.categoryId ?? null,
+      categoryName: getCategoryName(item.categoryId),
+      serial: item.serialNumber ?? '',
+      barcode: item.barcode ?? '',
+      condition: item.condition || 'good',
+      locationKey: onTruck ? item.assignedTruckId! : WAREHOUSE,
+      locationName: item.locationType === 'warehouse' ? 'Warehouse' : item.assignedTruckName || 'Unknown Truck',
+      unitPrice: Number.isFinite(price) ? price : null,
+      groupId: item.groupId ?? null,
+    };
+  };
+
+  const screenReportGroups = () =>
+    groupRows(
+      groupedTools.map((g) =>
+        summarizeItems(g.items.map(toReportItem), `${g.groupId}_${g.locationType}_${g.assignedTruckId || 'warehouse'}`)),
+      'none',
+    );
+
+  const screenReportMeta = (): ReportMeta => {
+    const filters = [
+      searchTerm && `Search: "${searchTerm}"`,
+      `Location: ${filterLocation === 'all' ? 'All' : filterLocation === 'warehouse' ? 'Warehouse' : 'On vans'}`,
+      filterTruck !== 'all' && `Van: ${filterTruck === 'warehouse' ? 'Warehouse only' : trucks.find((t) => t.id === filterTruck)?.name ?? ''}`,
+      `Category: ${filterCategory === 'all' ? 'All' : getCategoryName(filterCategory)}`,
+      `Sorted by: ${sortField} (${sortDirection === 'asc' ? 'A–Z' : 'Z–A'})`,
+    ].filter(Boolean).join('  ·  ');
+    return {
+      companyName,
+      title: 'Tools Inventory',
+      filtersText: filters,
+      printedBy: [userProfile?.first_name, userProfile?.last_name].filter(Boolean).join(' ') || userProfile?.email || '',
+      printedAt: new Date(),
+    };
+  };
+
+  const exportScreen = (format: 'csv' | 'xlsx') => {
+    const name = exportFileName(companyName, 'tools-inventory', format);
+    if (format === 'csv') downloadCsv(name, ALL_COLUMN_KEYS, screenReportGroups(), 'none');
+    else downloadXlsx(name, screenReportMeta(), ALL_COLUMN_KEYS, screenReportGroups(), 'none');
+  };
+
   const SortIcon = ({ field }: { field: typeof sortField }) => {
     if (sortField !== field) return null;
     return sortDirection === 'asc' ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />;
@@ -914,7 +979,30 @@ export const InventoryManager: React.FC = () => {
           <Package className="h-6 w-6" />
           Tools Inventory
         </h2>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
+          <Button variant="outline" onClick={print} disabled={groupedTools.length === 0}>
+            <Printer className="h-4 w-4 mr-2" />
+            Print
+          </Button>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="outline" disabled={groupedTools.length === 0}>
+                <Download className="h-4 w-4 mr-2" />
+                Export
+                <ChevronDown className="h-4 w-4 ml-1" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem className="py-3" onClick={() => exportScreen('csv')}>
+                <FileText className="h-4 w-4 mr-2" />
+                CSV (.csv)
+              </DropdownMenuItem>
+              <DropdownMenuItem className="py-3" onClick={() => exportScreen('xlsx')}>
+                <FileSpreadsheet className="h-4 w-4 mr-2" />
+                Excel (.xlsx)
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
           <Button
             variant="outline"
             onClick={() => setShowBulkImport(!showBulkImport)}
@@ -1669,6 +1757,18 @@ export const InventoryManager: React.FC = () => {
       </Card>
         </>
       )}
+      {printing && (() => {
+        const meta = screenReportMeta();
+        return (
+          <PrintPortal
+            landscape
+            runningHeader={`${meta.companyName} — ${meta.title}`}
+            runningHeaderRight={`Printed ${formatDateTime(meta.printedAt)}`}
+          >
+            <InventoryReportDocument meta={meta} columns={ALL_COLUMN_KEYS} groups={screenReportGroups()} />
+          </PrintPortal>
+        );
+      })()}
     </div>
   );
 };

@@ -5,7 +5,7 @@ import { Separator } from '@/components/ui/separator';
 import { 
   Package, Users, Activity, Settings, Scan, Mail, QrCode, 
   UserCheck, Truck, Plus, FileText, Wrench, Snowflake,
-  BarChart3, ChevronRight, Menu, X
+  BarChart3, ChevronRight, Menu, X, Printer
 } from 'lucide-react';
 
 interface AdminSidebarProps {
@@ -21,6 +21,7 @@ const menuItems = [
     items: [
       { id: "inventory", label: "Manage Parts", icon: Package },
       { id: "categories", label: "Categories", icon: Package },
+      { id: "print", label: "Print Inventory", icon: Printer },
       // { id: "create-request", label: "Create Request", icon: Plus },
       // { id: "fulfill", label: "Fulfill Requests", icon: Truck },
     ]
