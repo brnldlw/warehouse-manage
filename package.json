@@ -8,7 +8,11 @@
     "build": "vite build",
     "build:dev": "vite build --mode development",
     "lint": "eslint .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "db:check-tools": "node scripts/check-pg-tools.mjs",
+    "backup:prod": "node scripts/backup-prod.mjs",
+    "clone:staging": "node scripts/clone-staging.mjs",
+    "migrate": "node scripts/migrate.mjs"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.9.0",

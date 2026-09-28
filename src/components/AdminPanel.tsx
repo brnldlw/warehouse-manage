@@ -19,7 +19,9 @@ import { WarrantyTracker } from './WarrantyTracker';
 import { RefrigerantTracker } from './RefrigerantTracker';
 import { ReportsPanel } from './ReportsPanel';
 import { CreateRequest } from './CreateRequest';
+import { PrintInventory } from './PrintInventory';
 import { supabase } from '@/lib/supabase';
+import { fetchAll } from '@/lib/fetchAll';
 export const AdminPanel: React.FC = () => {
   const [techCount, setTechCount] = useState(0);
   const [activeUserCount, setActiveUserCount] = useState(0);
@@ -74,22 +76,20 @@ export const AdminPanel: React.FC = () => {
       }
 
       // Fetch categories count for specific company
-      const { data: categoryData, error: categoryError } = await supabase
+      const categoryData = await fetchAll(() => supabase
         .from('categories')
         .select('id')
-        .eq('company_id', companyId);
-
-      if (categoryError) throw categoryError;
-      setCategoryCount(categoryData?.length || 0);
+        .eq('company_id', companyId)
+        .order('id'));
+      setCategoryCount(categoryData.length);
 
       // Fetch items count for specific company
-      const { data: itemData, error: itemError } = await supabase
+      const itemData = await fetchAll(() => supabase
         .from('inventory_items')
         .select('id')
-        .eq('company_id', companyId);
-
-      if (itemError) throw itemError;
-      setItemCount(itemData?.length || 0);
+        .eq('company_id', companyId)
+        .order('id'));
+      setItemCount(itemData.length);
 
       // Fetch tech count for specific company
       const { data: techData, error: techError } = await supabase
@@ -122,6 +122,8 @@ export const AdminPanel: React.FC = () => {
         return <InventoryManager />;
       case 'categories':
         return <CategoryManager />;
+      case 'print':
+        return <PrintInventory />;
       case 'create-request':
         return <CreateRequest />;
       case 'fulfill':

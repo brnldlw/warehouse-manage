@@ -7,6 +7,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Plus, Minus, Package } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
+import { fetchAll } from '@/lib/fetchAll';
 import { useToast } from '@/hooks/use-toast';
 import { useAuth } from '@/contexts/AuthContext';
 
@@ -50,14 +51,13 @@ export const CreateRequest: React.FC = () => {
       }
 
       // Fetch only items for user's company
-      const { data, error } = await supabase
+      const data = await fetchAll(() => supabase
         .from('inventory_items')
         .select('id, name, quantity')
         .eq('company_id', profileData.company_id)
-        .order('name');
-      
-      if (error) throw error;
-      setItems(data || []);
+        .order('name')
+        .order('id'));
+      setItems(data);
     } catch (error) {
       console.error('Error fetching items:', error);
     }

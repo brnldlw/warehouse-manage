@@ -19,7 +19,7 @@ export const mockUsers = [
 ];
 
 // Store for dynamically added users
-let dynamicUsers: any[] = [];
+const dynamicUsers: any[] = [];
 
 export const addMockUser = (email: string, password: string, userData: any) => {
   const newUser = {

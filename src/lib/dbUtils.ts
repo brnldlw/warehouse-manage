@@ -1,4 +1,5 @@
 import { supabase } from './supabase';
+import { fetchAll, RangeableQuery } from './fetchAll';
 
 export interface RetryOptions {
   maxRetries?: number;
@@ -87,6 +88,17 @@ export async function safeQuery<T>(
   }, options);
 }
 
+/** safeQuery for lists: same retries and errors, but loads every row (see fetchAll). */
+export function safeQueryAll<T>(buildQuery: () => RangeableQuery<T>, options?: RetryOptions): Promise<T[]> {
+  return safeQuery<T[]>(
+    () => fetchAll(buildQuery).then(
+      (data) => ({ data, error: null }),
+      (error) => ({ data: [] as T[], error }),
+    ),
+    options,
+  );
+}
+
 export interface Category {
   id: string;
   name: string;
@@ -172,14 +184,12 @@ export const dbOperations = {
 
     const companyId = profileData.company_id;
 
-    return safeQuery(async () => {
-      const result = await supabase
-        .from('categories')
-        .select('*')
-        .eq('company_id', companyId)
-        .order('created_at', { ascending: true });
-      return result;
-    });
+    return safeQueryAll<Category>(() => supabase
+      .from('categories')
+      .select('*')
+      .eq('company_id', companyId)
+      .order('created_at', { ascending: true })
+      .order('id'));
   },
 
   async getInventoryItems(): Promise<InventoryItem[]> {
@@ -196,14 +206,12 @@ export const dbOperations = {
 
     const companyId = profileData.company_id;
     
-    return safeQuery(async () => {
-      const result = await supabase
-        .from('inventory_items')
-        .select('*')
-        .eq('company_id', companyId)
-        .order('created_at', { ascending: false });
-      return result;
-    });
+    return safeQueryAll<InventoryItem>(() => supabase
+      .from('inventory_items')
+      .select('*')
+      .eq('company_id', companyId)
+      .order('created_at', { ascending: false })
+      .order('id'));
   },
 
   async addCategory(categoryData: Partial<Category>): Promise<Category> {
@@ -297,13 +305,11 @@ export const dbOperations = {
 
     if (!profileData?.company_id) return [];
 
-    return safeQuery(async () => {
-      const result = await supabase
-        .from('trucks')
-        .select('*')
-        .eq('company_id', profileData.company_id);
-      return result;
-    });
+    return safeQueryAll<Truck>(() => supabase
+      .from('trucks')
+      .select('*')
+      .eq('company_id', profileData.company_id)
+      .order('id'));
   },
 
   async getUserProfiles(): Promise<UserProfile[]> {

@@ -12,6 +12,7 @@ import {
   Package, Loader2, Truck, Warehouse, Filter, RefreshCw
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
+import { fetchAll } from '@/lib/fetchAll';
 import { useAuth } from '@/contexts/AuthContext';
 import { useToast } from '@/hooks/use-toast';
 
@@ -74,13 +75,17 @@ export const ReportsPanel: React.FC = () => {
   const fetchTrucks = async () => {
     if (!userProfile?.company_id) return;
 
-    const { data } = await supabase
-      .from('trucks')
-      .select('id, name')
-      .eq('company_id', userProfile.company_id)
-      .order('name');
-
-    setTrucks(data || []);
+    try {
+      const data = await fetchAll(() => supabase
+        .from('trucks')
+        .select('id, name')
+        .eq('company_id', userProfile.company_id)
+        .order('name')
+        .order('id'));
+      setTrucks(data);
+    } catch (error) {
+      console.error('Error fetching trucks:', error);
+    }
   };
 
   const fetchSummary = async () => {
@@ -88,47 +93,41 @@ export const ReportsPanel: React.FC = () => {
 
     try {
       // Get tool counts by location
-      const { data: toolsData } = await supabase
+      const toolsData = await fetchAll(() => supabase
         .from('inventory_items')
         .select('id, location_type')
-        .eq('company_id', userProfile.company_id);
+        .eq('company_id', userProfile.company_id)
+        .order('id'));
 
-      const warehouseTools = toolsData?.filter(t => t.location_type === 'warehouse').length || 0;
-      const truckTools = toolsData?.filter(t => t.location_type === 'truck').length || 0;
+      const warehouseTools = toolsData.filter(t => t.location_type === 'warehouse').length;
+      const truckTools = toolsData.filter(t => t.location_type === 'truck').length;
 
       // Get this month's activity counts
       const startOfMonth = new Date();
       startOfMonth.setDate(1);
       startOfMonth.setHours(0, 0, 0, 0);
 
-      const { data: addedData } = await supabase
+      const monthActivityIds = (action: string) => fetchAll(() => supabase
         .from('activity_logs')
         .select('id')
         .eq('company_id', userProfile.company_id)
-        .eq('action', 'added')
-        .gte('timestamp', startOfMonth.toISOString());
+        .eq('action', action)
+        .gte('timestamp', startOfMonth.toISOString())
+        .order('id'));
 
-      const { data: deletedData } = await supabase
-        .from('activity_logs')
-        .select('id')
-        .eq('company_id', userProfile.company_id)
-        .eq('action', 'deleted')
-        .gte('timestamp', startOfMonth.toISOString());
-
-      const { data: transferData } = await supabase
-        .from('activity_logs')
-        .select('id')
-        .eq('company_id', userProfile.company_id)
-        .eq('action', 'transferred')
-        .gte('timestamp', startOfMonth.toISOString());
+      const [addedData, deletedData, transferData] = await Promise.all([
+        monthActivityIds('added'),
+        monthActivityIds('deleted'),
+        monthActivityIds('transferred'),
+      ]);
 
       setSummary({
-        totalTools: toolsData?.length || 0,
+        totalTools: toolsData.length,
         warehouseTools,
         truckTools,
-        addedThisMonth: addedData?.length || 0,
-        deletedThisMonth: deletedData?.length || 0,
-        transfersThisMonth: transferData?.length || 0
+        addedThisMonth: addedData.length,
+        deletedThisMonth: deletedData.length,
+        transfersThisMonth: transferData.length
       });
     } catch (error) {
       console.error('Error fetching summary:', error);
@@ -139,29 +138,27 @@ export const ReportsPanel: React.FC = () => {
     if (!userProfile?.company_id) return;
 
     try {
-      let query = supabase
-        .from('activity_logs')
-        .select('id, action, details, timestamp, user_id')
-        .eq('company_id', userProfile.company_id)
-        .in('action', ['added', 'deleted', 'transferred'])
-        .order('timestamp', { ascending: false })
-        .limit(100);
+      // All matching activity (not just the newest 100), so the list and CSV export are complete.
+      const data = await fetchAll(() => {
+        let query = supabase
+          .from('activity_logs')
+          .select('id, action, details, timestamp, user_id')
+          .eq('company_id', userProfile.company_id)
+          .in('action', ['added', 'deleted', 'transferred']);
 
-      if (dateFrom) {
-        query = query.gte('timestamp', new Date(dateFrom).toISOString());
-      }
-      if (dateTo) {
-        const endDate = new Date(dateTo);
-        endDate.setHours(23, 59, 59, 999);
-        query = query.lte('timestamp', endDate.toISOString());
-      }
-      if (actionFilter !== 'all') {
-        query = query.eq('action', actionFilter);
-      }
-
-      const { data, error } = await query;
-
-      if (error) throw error;
+        if (dateFrom) {
+          query = query.gte('timestamp', new Date(dateFrom).toISOString());
+        }
+        if (dateTo) {
+          const endDate = new Date(dateTo);
+          endDate.setHours(23, 59, 59, 999);
+          query = query.lte('timestamp', endDate.toISOString());
+        }
+        if (actionFilter !== 'all') {
+          query = query.eq('action', actionFilter);
+        }
+        return query.order('timestamp', { ascending: false }).order('id');
+      });
 
       // Get user names
       const userIds = [...new Set(data?.map(a => a.user_id).filter(Boolean) || [])];

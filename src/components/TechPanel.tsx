@@ -12,6 +12,7 @@ import { BarcodeScanner } from './BarcodeScanner';
 import { RefrigerantTracker } from './RefrigerantTracker';
 import { useAuth } from '@/contexts/AuthContext';
 import { supabase } from '@/lib/supabase';
+import { fetchAll } from '@/lib/fetchAll';
 
 interface VanTool {
   id: string;
@@ -121,23 +122,24 @@ export const TechPanel: React.FC = () => {
 
     try {
       // Get all tools assigned to this truck
-      const { data: toolsData, error: toolsError } = await supabase
+      const toolsData = await fetchAll(() => supabase
         .from('inventory_items')
         .select('id, name, description, serial_number, barcode, condition, category_id, image_url, unit_price, group_id')
         .eq('company_id', userProfile.company_id)
         .eq('location_type', 'truck')
         .eq('assigned_truck_id', truckId)
-        .order('name');
+        .order('name')
+        .order('id'));
 
-      if (toolsError) throw toolsError;
-
-      // Get categories to map names
-      const { data: categoriesData } = await supabase
+      // Get categories to map names (best effort: tools still show without them)
+      const categoriesData: { id: string; name: string; color: string }[] = await fetchAll(() => supabase
         .from('categories')
         .select('id, name, color')
-        .eq('company_id', userProfile.company_id);
+        .eq('company_id', userProfile.company_id)
+        .order('id'))
+        .catch((err) => { console.error('Error loading categories:', err); return []; });
 
-      const categoryMap = (categoriesData || []).reduce((acc, cat) => {
+      const categoryMap = categoriesData.reduce((acc, cat) => {
         acc[cat.id] = { name: cat.name, color: cat.color };
         return acc;
       }, {} as Record<string, { name: string; color: string }>);
@@ -167,14 +169,13 @@ export const TechPanel: React.FC = () => {
     if (!userProfile?.company_id) return;
     
     try {
-      const { data, error } = await supabase
+      const data = await fetchAll(() => supabase
         .from('categories')
         .select('id, name')
         .eq('company_id', userProfile.company_id)
-        .order('name');
-      
-      if (error) throw error;
-      setCategories(data || []);
+        .order('name')
+        .order('id'));
+      setCategories(data);
     } catch (error) {
       console.error('Error fetching categories:', error);
     }
