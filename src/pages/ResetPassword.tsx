@@ -7,7 +7,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { FormAlert } from '@/components/auth/FormAlert';
 import { useAuth } from '@/contexts/AuthContext';
 import { supabase } from '@/lib/supabase';
-import { emailLinkError } from '@/lib/authRedirect';
+import { emailLinkError, openedFromInviteLink } from '@/lib/authRedirect';
 import { MIN_PASSWORD_LENGTH, checkNewPassword, explainAuthError } from '@/lib/authErrors';
 
 /**
@@ -74,10 +74,13 @@ const ResetPassword: React.FC = () => {
       <div className="space-y-4">
         <FormAlert error={
           emailLinkError
-            ? `This reset link can't be used: ${emailLinkError.description.replace(/\+/g, ' ')}. Links expire after a while and work only once.`
-            : 'This reset link is invalid, has expired, or was already used.'
+            ? `This link can't be used: ${emailLinkError.description.replace(/\+/g, ' ')}. Links expire after a while and work only once.`
+            : 'This link is invalid, has expired, or was already used.'
         } />
-        <p className="text-base text-gray-700">Go back to the sign-in page and click “Forgot password?” to get a new link.</p>
+        <p className="text-base text-gray-700">
+          Go back to the sign-in page and click “Forgot password?” to get a new link
+          {openedFromInviteLink || emailLinkError ? ', or ask your admin to use “Resend invite”' : ''}.
+        </p>
         <Button className="w-full h-14 text-base" onClick={() => navigate('/', { replace: true })}>Back to sign in</Button>
       </div>
     );
@@ -87,8 +90,10 @@ const ResetPassword: React.FC = () => {
     <div className="min-h-screen bg-gray-50 flex items-center justify-center p-4">
       <Card className="w-full max-w-md">
         <CardHeader>
-          <CardTitle>Choose a new password</CardTitle>
-          <CardDescription>Use at least {MIN_PASSWORD_LENGTH} characters.</CardDescription>
+          <CardTitle>{openedFromInviteLink ? 'Welcome! Choose your password' : 'Choose a new password'}</CardTitle>
+          <CardDescription>
+            {openedFromInviteLink ? "You've been added to the team. " : ''}Use at least {MIN_PASSWORD_LENGTH} characters.
+          </CardDescription>
         </CardHeader>
         <CardContent>{body}</CardContent>
       </Card>

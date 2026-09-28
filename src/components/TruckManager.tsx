@@ -28,6 +28,9 @@ import { fetchAll } from '@/lib/fetchAll';
 import { useToast } from '@/hooks/use-toast';
 import { useAuth } from '@/contexts/AuthContext';
 import { Truck as TruckIcon, Plus, Users, Loader2, MoreVertical, Pencil, Trash2 } from 'lucide-react';
+import { SearchBox } from '@/components/SearchBox';
+import { VanToolsDialog } from '@/components/VanToolsDialog';
+import { matchesSearch } from '@/lib/search';
 
 export const TruckManager: React.FC = () => {
   const [trucks, setTrucks] = useState<Truck[]>([]);
@@ -40,6 +43,9 @@ export const TruckManager: React.FC = () => {
   const [deletingTruck, setDeletingTruck] = useState<Truck | null>(null);
   const [editLoading, setEditLoading] = useState(false);
   const [deleteLoading, setDeleteLoading] = useState(false);
+  const [peopleById, setPeopleById] = useState<Record<string, string>>({});
+  const [search, setSearch] = useState('');
+  const [viewingTruck, setViewingTruck] = useState<Truck | null>(null);
   const { toast } = useToast();
   const { isAdmin, userProfile } = useAuth();
 
@@ -88,13 +94,22 @@ export const TruckManager: React.FC = () => {
         return;
       }
 
-      const { data, error } = await supabase
-        .from('user_truck_assignments')
-        .select('*')
-        .eq('company_id', userProfile.company_id);
-      
-      if (error) throw error;
-      setAssignments(data || []);
+      const [data, people] = await Promise.all([
+        fetchAll(() => supabase
+          .from('user_truck_assignments')
+          .select('*')
+          .eq('company_id', userProfile.company_id)
+          .order('id')),
+        fetchAll(() => supabase
+          .from('user_profiles')
+          .select('id, first_name, last_name, email')
+          .eq('company_id', userProfile.company_id)
+          .order('id')),
+      ]);
+      setAssignments(data);
+      setPeopleById(Object.fromEntries(people.map((p) => [
+        p.id, [p.first_name, p.last_name].filter(Boolean).join(' ') || p.email || 'Unnamed',
+      ])));
     } catch (error) {
       console.error('Failed to load assignments:', error);
     }
@@ -144,6 +159,11 @@ export const TruckManager: React.FC = () => {
   const getAssignedUsers = (truckId: string) => {
     return assignments.filter(a => a.truck_id === truckId).length;
   };
+
+  const techNamesFor = (truckId: string) =>
+    assignments.filter((a) => a.truck_id === truckId).map((a) => peopleById[a.user_id]).filter(Boolean);
+
+  const visibleTrucks = trucks.filter((t) => matchesSearch(search, t.name, t.identifier, ...techNamesFor(t.id)));
 
   const openEdit = (truck: Truck) => {
     setEditingTruck(truck);
@@ -277,16 +297,39 @@ export const TruckManager: React.FC = () => {
         </CardContent>
       </Card>
 
+      <SearchBox
+        value={search}
+        onChange={setSearch}
+        placeholder="Search vans by name, plate/identifier or technician…"
+        shown={visibleTrucks.length}
+        total={trucks.length}
+        noun="vans"
+      />
+      <p className="text-sm text-gray-700 -mt-3">Click a van to see the tools on it.</p>
+
+      {visibleTrucks.length === 0 && (
+        <p className="py-8 text-center text-base text-gray-700">
+          {search ? 'No vans match your search.' : 'No vans yet. Add one above.'}
+        </p>
+      )}
+
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-        {trucks.map((truck) => (
-          <Card key={truck.id}>
+        {visibleTrucks.map((truck) => (
+          <Card
+            key={truck.id}
+            role="button"
+            tabIndex={0}
+            className="cursor-pointer hover:shadow-md hover:border-blue-600 transition"
+            onClick={() => setViewingTruck(truck)}
+            onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setViewingTruck(truck); } }}
+          >
             <CardHeader>
               <CardTitle className="flex items-center justify-between">
                 <span className="flex items-center gap-2">
                   <TruckIcon className="h-4 w-4" />
                   {truck.name}
                 </span>
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()} onKeyDown={(e) => e.stopPropagation()}>
                   <Badge variant="secondary" className="flex items-center gap-1">
                     <Users className="h-3 w-3" />
                     {getAssignedUsers(truck.id)}
@@ -318,6 +361,9 @@ export const TruckManager: React.FC = () => {
               <p className="text-sm text-muted-foreground">
                 Identifier: {truck.identifier}
               </p>
+              <p className="text-sm text-gray-800 mt-1">
+                {techNamesFor(truck.id).length ? `Tech: ${techNamesFor(truck.id).join(', ')}` : 'No technician assigned'}
+              </p>
               <p className="text-xs text-muted-foreground mt-2">
                 Added: {new Date(truck.created_at).toLocaleDateString()}
               </p>
@@ -326,6 +372,14 @@ export const TruckManager: React.FC = () => {
         ))}
       </div>
         </>
+      )}
+
+      {viewingTruck && (
+        <VanToolsDialog
+          truck={{ id: viewingTruck.id, name: viewingTruck.name, identifier: viewingTruck.identifier ?? '' }}
+          techNames={techNamesFor(viewingTruck.id)}
+          onClose={() => setViewingTruck(null)}
+        />
       )}
 
       {/* Edit Dialog */}

@@ -48,12 +48,14 @@ export interface ReportItem {
   locationName: string;
   unitPrice: number | null;
   groupId: string | null;
+  imageUrl?: string | null;
 }
 
 /** One printed line: a single tool (detailed) or several identical tools (summary). */
 export interface ReportRow {
   key: string;
   name: string;
+  imageUrl?: string | null;
   categoryId: string | null;
   category: string;
   serial: string;
@@ -108,6 +110,51 @@ export const truckLabel = (t: TruckInfo) => (t.identifier ? `${t.name} (${t.iden
 
 // ---------- loading ----------
 
+const ITEM_COLUMNS = 'id, name, category_id, serial_number, barcode, condition, location_type, assigned_truck_id, unit_price, group_id, image_url';
+
+/** One inventory_items row -> ReportItem. */
+function toReportItem(r: Record<string, unknown>, categoryName: Map<string, string>, truckById: Map<string, TruckInfo>): ReportItem {
+  const truckId = (r.assigned_truck_id as string | null) ?? null;
+  const onTruck = r.location_type === 'truck' && truckId;
+  const truck = onTruck ? truckById.get(truckId) : undefined;
+  const price = r.unit_price === null || r.unit_price === undefined ? null : Number(r.unit_price);
+  return {
+    id: r.id as string,
+    name: ((r.name as string) ?? '').trim(),
+    categoryId: (r.category_id as string | null) ?? null,
+    categoryName: categoryName.get(r.category_id as string) ?? UNCATEGORIZED,
+    serial: (r.serial_number as string) ?? '',
+    barcode: (r.barcode as string) ?? '',
+    condition: (r.condition as string) || 'good',
+    locationKey: onTruck ? truckId : WAREHOUSE,
+    locationName: onTruck ? (truck ? truckLabel(truck) : 'Unknown van') : 'Warehouse',
+    unitPrice: Number.isFinite(price) ? price : null,
+    groupId: (r.group_id as string | null) ?? null,
+    imageUrl: (r.image_url as string | null) ?? null,
+  };
+}
+
+export async function loadCompanyName(companyId: string): Promise<string> {
+  const { data } = await supabase.from('companies').select('name').eq('id', companyId).maybeSingle();
+  return (data?.name as string) ?? '';
+}
+
+/** Every tool currently on one van (this company only). */
+export async function loadVanItems(companyId: string, truck: TruckInfo): Promise<ReportItem[]> {
+  const [categories, rawItems] = await Promise.all([
+    fetchAll(() => supabase.from('categories').select('id, name').eq('company_id', companyId).order('id')),
+    fetchAll<Record<string, unknown>>(() => supabase
+      .from('inventory_items')
+      .select(ITEM_COLUMNS)
+      .eq('company_id', companyId)
+      .eq('location_type', 'truck')
+      .eq('assigned_truck_id', truck.id)
+      .order('id')),
+  ]);
+  const categoryName = new Map(categories.map((c) => [c.id as string, c.name as string]));
+  return rawItems.map((r) => toReportItem(r, categoryName, new Map([[truck.id, truck]])));
+}
+
 /** Everything a report needs, limited to one company (RLS enforces this too). */
 export async function loadReportData(companyId: string): Promise<ReportData> {
   const [company, categories, trucks, assignments, rawItems] = await Promise.all([
@@ -119,7 +166,7 @@ export async function loadReportData(companyId: string): Promise<ReportData> {
       .catch((err) => { console.error('Could not load van assignments:', err); return []; }),
     fetchAll<Record<string, unknown>>(() => supabase
       .from('inventory_items')
-      .select('id, name, category_id, serial_number, barcode, condition, location_type, assigned_truck_id, unit_price, group_id')
+      .select(ITEM_COLUMNS)
       .eq('company_id', companyId)
       .order('id')),
   ]);
@@ -128,25 +175,7 @@ export async function loadReportData(companyId: string): Promise<ReportData> {
   const truckList: TruckInfo[] = trucks.map((t) => ({ id: t.id, name: t.name, identifier: t.identifier ?? '' }));
   const truckById = new Map(truckList.map((t) => [t.id, t]));
 
-  const items: ReportItem[] = rawItems.map((r) => {
-    const truckId = (r.assigned_truck_id as string | null) ?? null;
-    const onTruck = r.location_type === 'truck' && truckId;
-    const truck = onTruck ? truckById.get(truckId) : undefined;
-    const price = r.unit_price === null || r.unit_price === undefined ? null : Number(r.unit_price);
-    return {
-      id: r.id as string,
-      name: ((r.name as string) ?? '').trim(),
-      categoryId: (r.category_id as string | null) ?? null,
-      categoryName: categoryName.get(r.category_id as string) ?? UNCATEGORIZED,
-      serial: (r.serial_number as string) ?? '',
-      barcode: (r.barcode as string) ?? '',
-      condition: (r.condition as string) || 'good',
-      locationKey: onTruck ? truckId : WAREHOUSE,
-      locationName: onTruck ? (truck ? truckLabel(truck) : 'Unknown van') : 'Warehouse',
-      unitPrice: Number.isFinite(price) ? price : null,
-      groupId: (r.group_id as string | null) ?? null,
-    };
-  });
+  const items = rawItems.map((r) => toReportItem(r, categoryName, truckById));
 
   // Tech names per van (best effort: the report still works without them).
   const truckTechs: Record<string, string[]> = {};
@@ -188,6 +217,7 @@ export function summarizeItems(items: ReportItem[], key: string): ReportRow {
   return {
     key,
     name: first.name,
+    imageUrl: items.find((i) => i.imageUrl)?.imageUrl ?? null,
     categoryId: first.categoryId,
     category: first.categoryName,
     serial: items.length === 1 ? first.serial : '',

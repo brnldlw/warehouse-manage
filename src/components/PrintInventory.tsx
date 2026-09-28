@@ -16,6 +16,8 @@ import {
   sortRows, truckLabel,
 } from '@/lib/inventoryReport';
 import { ClipboardCheck, FileSpreadsheet, FileText, List, Loader2, Printer } from 'lucide-react';
+import { SearchBox } from '@/components/SearchBox';
+import { matchesSearch } from '@/lib/search';
 
 type ReportType = 'list' | 'vanSheet';
 
@@ -61,6 +63,7 @@ export const PrintInventory: React.FC = () => {
   const [columns, setColumns] = useState<ColumnKey[]>(ALL_COLUMN_KEYS);
   const [landscape, setLandscape] = useState(true);
   const [van, setVan] = useState('all'); // van sheet: all | <truck id>
+  const [search, setSearch] = useState('');
 
   const companyId = userProfile?.company_id;
 
@@ -89,9 +92,10 @@ export const PrintInventory: React.FC = () => {
         (location === 'vans' && i.locationKey !== WAREHOUSE) ||
         i.locationKey === location) &&
       (category === 'all' || (category === 'none' ? !i.categoryId : i.categoryId === category)) &&
-      (condition === 'all' || i.condition === condition));
+      (condition === 'all' || i.condition === condition) &&
+      matchesSearch(search, i.name, i.serial, i.barcode, i.categoryName, i.locationName));
     return groupRows(sortRows(buildRows(items, detail), sortBy), groupBy);
-  }, [data, location, category, condition, detail, sortBy, groupBy]);
+  }, [data, location, category, condition, detail, sortBy, groupBy, search]);
 
   const truckById = useMemo(() => new Map((data?.trucks ?? []).map((t) => [t.id, t])), [data]);
   const locationText =
@@ -106,6 +110,7 @@ export const PrintInventory: React.FC = () => {
     companyName: data?.companyName ?? '',
     title: 'Inventory Report',
     filtersText: [
+      ...(search.trim() ? [`Search: "${search.trim()}"`] : []),
       `Location: ${locationText}`,
       `Category: ${categoryText}`,
       `Condition: ${condition === 'all' ? 'All' : conditionLabel(condition)}`,
@@ -181,6 +186,16 @@ export const PrintInventory: React.FC = () => {
       <Card>
         <CardHeader><CardTitle className="text-lg">Options</CardTitle></CardHeader>
         <CardContent className="space-y-5">
+          {isList && (
+            <SearchBox
+              value={search}
+              onChange={setSearch}
+              placeholder="Search name, serial, barcode, category or van…"
+              shown={listCount}
+              total={data?.items.length ?? 0}
+              noun="tools"
+            />
+          )}
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
             {isList ? (
               <>

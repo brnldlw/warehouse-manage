@@ -7,8 +7,11 @@ const hash = typeof window !== 'undefined' ? window.location.hash.replace(/^#/, 
 const search = typeof window !== 'undefined' ? window.location.search.replace(/^\?/, '') : '';
 const params = new URLSearchParams(`${search}&${hash}`);
 
-/** The page was opened from a password-reset email link. */
-export const openedFromRecoveryLink = params.get('type') === 'recovery';
+/** The page was opened from an invite email (an admin added this technician). */
+export const openedFromInviteLink = params.get('type') === 'invite';
+
+/** The page was opened from a link whose next step is choosing a password (reset or invite). */
+export const openedFromRecoveryLink = params.get('type') === 'recovery' || openedFromInviteLink;
 
 /** Error Supabase reported for an email link (e.g. expired), as plain text, or null. */
 export const emailLinkError: { code: string; description: string } | null = params.get('error')

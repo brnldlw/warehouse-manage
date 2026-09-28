@@ -8,6 +8,8 @@ import { dbOperations } from '@/lib/dbUtils';
 import { showErrorNotification, showSuccessNotification } from '@/lib/notificationUtils';
 import { useToast } from '@/hooks/use-toast';
 import { UserCheck, Truck as TruckIcon, Loader2 } from 'lucide-react';
+import { SearchBox } from '@/components/SearchBox';
+import { matchesSearch } from '@/lib/search';
 export const TruckAssignmentManager: React.FC = () => {
   const [trucks, setTrucks] = useState<Truck[]>([]);
   const [users, setUsers] = useState<any[]>([]);
@@ -16,6 +18,7 @@ export const TruckAssignmentManager: React.FC = () => {
   const [selectedTruck, setSelectedTruck] = useState('');
   const [loading, setLoading] = useState(false);
   const [pageLoading, setPageLoading] = useState(true);
+  const [search, setSearch] = useState('');
   const { toast } = useToast();
 
   useEffect(() => {
@@ -75,13 +78,20 @@ export const TruckAssignmentManager: React.FC = () => {
 
   const getUserName = (userId: string) => {
     const user = users.find(u => u.id === userId);
-    return user ? user.full_name || user.email : 'Unknown User';
+    return user ? [user.first_name, user.last_name].filter(Boolean).join(' ') || user.email : 'Unknown User';
   };
 
   const getTruckName = (truckId: string) => {
     const truck = trucks.find(t => t.id === truckId);
     return truck ? truck.name : 'Unknown Truck';
   };
+
+  const visibleAssignments = assignments.filter((a) => {
+    const user = users.find((u) => u.id === a.user_id);
+    const truck = trucks.find((t) => t.id === a.truck_id);
+    return matchesSearch(search, getUserName(a.user_id), user?.first_name, user?.last_name, user?.email, user?.phone,
+      truck?.name, truck?.identifier);
+  });
 
   return (
     <div className="space-y-6">
@@ -111,7 +121,7 @@ export const TruckAssignmentManager: React.FC = () => {
                 <SelectContent>
                   {users.map((user) => (
                     <SelectItem key={user.id} value={user.id}>
-                      {user.full_name || user.email}
+                      {getUserName(user.id)}
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -146,9 +156,17 @@ export const TruckAssignmentManager: React.FC = () => {
         <CardHeader>
           <CardTitle>Current Assignments</CardTitle>
         </CardHeader>
-        <CardContent>
+        <CardContent className="space-y-4">
+          <SearchBox
+            value={search}
+            onChange={setSearch}
+            placeholder="Search by technician, email, phone or van…"
+            shown={visibleAssignments.length}
+            total={assignments.length}
+            noun="assignments"
+          />
           <div className="space-y-2">
-            {assignments.map((assignment) => (
+            {visibleAssignments.map((assignment) => (
               <div key={assignment.id} className="flex items-center justify-between p-3 border rounded-lg">
                 <div className="flex items-center gap-3">
                   <TruckIcon className="h-4 w-4" />
@@ -168,9 +186,9 @@ export const TruckAssignmentManager: React.FC = () => {
                 </Button>
               </div>
             ))}
-            {assignments.length === 0 && (
+            {visibleAssignments.length === 0 && (
               <p className="text-muted-foreground text-center py-4">
-                No assignments yet
+                {search && assignments.length ? 'No assignments match your search' : 'No assignments yet'}
               </p>
             )}
           </div>

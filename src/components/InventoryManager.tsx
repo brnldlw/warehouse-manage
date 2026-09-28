@@ -21,6 +21,8 @@ import { BulkImport } from './BulkImport';
 import { uploadItemImage, deleteItemImage, validateImageFile } from '@/lib/imageUtils';
 import { usePrint } from '@/hooks/use-print';
 import { fetchAll } from '@/lib/fetchAll';
+import { matchesSearch } from '@/lib/search';
+import { SearchBox } from './SearchBox';
 import { PrintPortal } from './print/PrintPortal';
 import { InventoryReportDocument } from './print/InventoryReportDocument';
 import {
@@ -839,10 +841,14 @@ export const InventoryManager: React.FC = () => {
   // Filter and sort items
   const filteredItems = items
     .filter(item => {
-      const matchesSearch = 
-        item.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        item.serialNumber?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        item.barcode?.toLowerCase().includes(searchTerm.toLowerCase());
+      const matchesText = matchesSearch(
+        searchTerm,
+        item.name,
+        item.serialNumber,
+        item.barcode,
+        getCategoryName(item.categoryId),
+        item.locationType === 'warehouse' ? 'Warehouse' : item.assignedTruckName,
+      );
       
       const matchesLocation = 
         filterLocation === 'all' || 
@@ -857,7 +863,7 @@ export const InventoryManager: React.FC = () => {
         filterCategory === 'all' || 
         item.categoryId === filterCategory;
 
-      return matchesSearch && matchesLocation && matchesTruck && matchesCategory;
+      return matchesText && matchesLocation && matchesTruck && matchesCategory;
     })
     .sort((a, b) => {
       let comparison = 0;
@@ -1470,17 +1476,15 @@ export const InventoryManager: React.FC = () => {
       <Card>
         <CardContent className="pt-4">
           <div className="flex flex-col md:flex-row gap-4">
-            <div className="flex-1">
-              <div className="relative">
-                <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
-                <Input
-                  placeholder="Search by name, serial number, or barcode..."
-                  value={searchTerm}
-                  onChange={(e) => setSearchTerm(e.target.value)}
-                  className="pl-10"
-                />
-              </div>
-            </div>
+            <SearchBox
+              className="flex-1"
+              value={searchTerm}
+              onChange={setSearchTerm}
+              placeholder="Search name, serial, barcode, category or van…"
+              shown={filteredItems.length}
+              total={items.length}
+              noun="tools"
+            />
             <Select value={filterLocation} onValueChange={(value: any) => setFilterLocation(value)}>
               <SelectTrigger className="w-full md:w-40">
                 <SelectValue placeholder="Location" />
