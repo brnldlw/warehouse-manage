@@ -14,11 +14,13 @@ interface PrintPortalProps {
   /** Small running header printed at the top of every page. */
   runningHeader?: string;
   runningHeaderRight?: string;
+  /** Label sheets: US Letter, no page margins, no header or page numbers. */
+  bare?: boolean;
   children: React.ReactNode;
 }
 
-export const PrintPortal: React.FC<PrintPortalProps> = ({ landscape, runningHeader = '', runningHeaderRight = '', children }) => {
-  const pageCss = `
+export const PrintPortal: React.FC<PrintPortalProps> = ({ landscape, runningHeader = '', runningHeaderRight = '', bare, children }) => {
+  const pageCss = bare ? '@page { size: letter portrait; margin: 0; }' : `
 @page {
   size: ${landscape ? 'landscape' : 'portrait'};
   margin: 14mm 12mm 14mm 12mm;

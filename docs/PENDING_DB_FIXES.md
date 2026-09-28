@@ -67,6 +67,42 @@ sign-up details with `role` forced to `'tech'` and `company_id` validated agains
 and an insert rule on `user_profiles` that no longer lets users insert/choose role or company
 themselves. Draft to be written with the migration, including rollback.
 
+## 3. Barcodes are unique across ALL companies, not per company — CONFIRMED (schema dump)
+
+**Symptom:** "CAP-00012 is already used by a tool in another company" when assigning a code,
+even though no tool in *your* company has it.
+
+**Why:** `inventory_items.barcode` has a database-wide `UNIQUE` rule (see `database.sql`). Two
+companies whose names give the same prefix (e.g. "Caplinger" and "Capital Plumbing" → `CAP`)
+compete for the same numbers, and a real product barcode (UPC) on the same model of tool can only
+be stored once in the whole app.
+*App-side mitigation already in place:* the app checks your own company first (and names the tool
+that has the code); bulk coding skips numbers another company uses.
+
+**Proposed fix:** replace the single-column rule with one per company:
+```sql
+-- NOT APPLIED. Draft for review.
+alter table public.inventory_items drop constraint inventory_items_barcode_key; -- Postgres' default name; confirm first
+create unique index inventory_items_company_barcode_key
+  on public.inventory_items (company_id, lower(barcode)) where barcode is not null;
+-- Rollback (only works if no two companies share a barcode by then):
+-- drop index public.inventory_items_company_barcode_key;
+-- alter table public.inventory_items add constraint inventory_items_barcode_key unique (barcode);
+```
+(Same pattern applies to `categories.name` and `trucks.identifier`, which are also unique across
+all companies: two companies can't both have a "Ladders" category or a van with plate "ABC-123".)
+
+## 4. Every tool transfer is logged twice — CONFIRMED (migration 001 + app code)
+
+**Why:** the database trigger `trigger_log_tool_transfer` writes a `tool_transfer` row per tool,
+and the app also writes a `transferred` row per move (`InventoryManager.tsx`).
+*App-side mitigation already in place:* the Tool Usage report counts each transfer once. The
+older screens (Reports activity list, Technicians "Recent activities") only read `transferred`.
+
+**Proposed fix (later, with the custody rebuild's `tool_events` table):** keep one source of truth —
+the database — and have the screens read it; stop the app-side `transferred` insert in the same
+release. No change needed until then.
+
 ---
 
 ## Checks (read-only, to run in Supabase → SQL Editor or via `psql`)

@@ -332,7 +332,7 @@ export function exportFileName(companyName: string, title: string, ext: 'csv' | 
   return `${[slug(companyName), slug(title), stamp].filter(Boolean).join('_')}.${ext}`;
 }
 
-function downloadBlob(blob: Blob, fileName: string) {
+export function downloadBlob(blob: Blob, fileName: string) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
@@ -345,7 +345,7 @@ function downloadBlob(blob: Blob, fileName: string) {
 
 // A cell starting with = + - @ is run as a formula by Excel; prefix text like that
 // with ' so tool names can never execute as formulas.
-const safeText = (s: string) => (/^[=+\-@\t\r]/.test(s) ? `'${s}` : s);
+export const safeText = (s: string) => (/^[=+\-@\t\r]/.test(s) ? `'${s}` : s);
 
 /** One row per line, plain data (no subtotal rows) so it imports cleanly anywhere. */
 export function downloadCsv(fileName: string, columns: ColumnKey[], groups: ReportGroup[], groupBy: GroupBy) {
@@ -368,10 +368,10 @@ export function downloadCsv(fileName: string, columns: ColumnKey[], groups: Repo
   downloadBlob(new Blob(['﻿' + lines.join('\r\n') + '\r\n'], { type: 'text/csv;charset=utf-8' }), fileName);
 }
 
-const MONEY_FORMAT = '"$"#,##0.00';
+export const MONEY_FORMAT = '"$"#,##0.00';
 
 /** xlsx 0.18 cannot write frozen panes, so patch the sheet XML inside the zip. */
-function freezeTopRow(bytes: ArrayBuffer, sheetNumber: number): Uint8Array<ArrayBuffer> {
+export function freezeTopRow(bytes: ArrayBuffer | Uint8Array, sheetNumber: number): Uint8Array<ArrayBuffer> {
   const zip = XLSX.CFB.read(new Uint8Array(bytes), { type: 'array' });
   const entry = XLSX.CFB.find(zip, `/xl/worksheets/sheet${sheetNumber}.xml`);
   if (!entry) return new Uint8Array(bytes);

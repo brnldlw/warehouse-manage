@@ -15,6 +15,7 @@ import { supabase } from '@/lib/supabase';
 import { fetchAll } from '@/lib/fetchAll';
 import { matchesSearch } from '@/lib/search';
 import { SearchBox } from '@/components/SearchBox';
+import { ToolUsageReport } from '@/components/ToolUsageReport';
 import { useAuth } from '@/contexts/AuthContext';
 import { useToast } from '@/hooks/use-toast';
 
@@ -54,6 +55,7 @@ export const ReportsPanel: React.FC = () => {
   const [dateTo, setDateTo] = useState('');
   const [actionFilter, setActionFilter] = useState<string>('all');
   const [search, setSearch] = useState('');
+  const [reportTab, setReportTab] = useState<'activity' | 'usage'>('activity');
   const [trucks, setTrucks] = useState<{ id: string; name: string }[]>([]);
 
   useEffect(() => {
@@ -299,8 +301,29 @@ export const ReportsPanel: React.FC = () => {
     );
   }
 
+  const tabSwitch = (
+    <div className="flex rounded-md border-2 border-gray-800 overflow-hidden w-fit" role="tablist" aria-label="Report">
+      {([['activity', 'Activity history'], ['usage', 'Tool usage']] as const).map(([key, label]) => (
+        <button key={key} type="button" role="tab" aria-selected={reportTab === key} onClick={() => setReportTab(key)}
+          className={`h-12 px-5 text-base font-medium ${reportTab === key ? 'bg-gray-900 text-white' : 'bg-white text-gray-900'}`}>
+          {label}
+        </button>
+      ))}
+    </div>
+  );
+
+  if (reportTab === 'usage') {
+    return (
+      <div className="space-y-6">
+        {tabSwitch}
+        <ToolUsageReport />
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-6">
+      {tabSwitch}
       {/* Summary Cards */}
       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
         <Card>
