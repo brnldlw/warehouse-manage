@@ -1,10 +1,7 @@
 import { createClient } from '@supabase/supabase-js';
+import { SUPABASE_URL, SUPABASE_ANON_KEY } from './env';
 
-// Updated Supabase configuration with correct API key
-const supabaseUrl = 'https://actgfkpgwcfwxaecplhi.supabase.co';
-const supabaseKey = 'sb_publishable_VQo_FaEwXivMv3Cdk7Jy3Q_FN1bc6We';
-
-export const supabase = createClient(supabaseUrl, supabaseKey, {
+export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
   auth: {
     persistSession: true,
     autoRefreshToken: true,
