@@ -24,6 +24,7 @@ import {
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { Truck, TruckAssignment } from '@/types/truck';
 import { supabase } from '@/lib/supabase';
+import { fetchAll } from '@/lib/fetchAll';
 import { useToast } from '@/hooks/use-toast';
 import { useAuth } from '@/contexts/AuthContext';
 import { Truck as TruckIcon, Plus, Users, Loader2, MoreVertical, Pencil, Trash2 } from 'lucide-react';
@@ -64,14 +65,13 @@ export const TruckManager: React.FC = () => {
         return;
       }
 
-      const { data, error } = await supabase
+      const data = await fetchAll(() => supabase
         .from('trucks')
         .select('*')
         .eq('company_id', userProfile.company_id)
-        .order('created_at', { ascending: false });
-      
-      if (error) throw error;
-      setTrucks(data || []);
+        .order('created_at', { ascending: false })
+        .order('id'));
+      setTrucks(data);
     } catch (error) {
       toast({
         title: "Error",

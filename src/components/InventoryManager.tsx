@@ -20,6 +20,7 @@ import {
 import { BulkImport } from './BulkImport';
 import { uploadItemImage, deleteItemImage, validateImageFile } from '@/lib/imageUtils';
 import { usePrint } from '@/hooks/use-print';
+import { fetchAll } from '@/lib/fetchAll';
 import { PrintPortal } from './print/PrintPortal';
 import { InventoryReportDocument } from './print/InventoryReportDocument';
 import {
@@ -129,14 +130,13 @@ export const InventoryManager: React.FC = () => {
     try {
       if (!userProfile?.company_id) return;
 
-      const { data, error } = await supabase
+      const data = await fetchAll(() => supabase
         .from('trucks')
         .select('id, name, identifier')
         .eq('company_id', userProfile.company_id)
-        .order('name');
-
-      if (error) throw error;
-      setTrucks(data || []);
+        .order('name')
+        .order('id'));
+      setTrucks(data);
     } catch (error) {
       console.error('Error loading trucks:', error);
     }
@@ -158,19 +158,18 @@ export const InventoryManager: React.FC = () => {
 
       const companyId = profileData.company_id;
 
-      // Load items with truck info
-      const { data, error } = await supabase
+      // Load items with truck info (all of them, not just the first 1000)
+      const data = await fetchAll(() => supabase
         .from('inventory_items')
         .select(`
           *,
           trucks:assigned_truck_id (name, identifier)
         `)
         .eq('company_id', companyId)
-        .order('created_at', { ascending: false });
-      
-      if (error) throw error;
-      
-      const transformedItems = (data || []).map(item => ({
+        .order('created_at', { ascending: false })
+        .order('id'));
+
+      const transformedItems = data.map(item => ({
         id: item.id,
         name: item.name,
         description: item.description,

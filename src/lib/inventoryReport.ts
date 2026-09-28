@@ -4,6 +4,7 @@
 
 import * as XLSX from 'xlsx';
 import { supabase } from '@/lib/supabase';
+import { fetchAll } from '@/lib/fetchAll';
 
 export type Condition = 'good' | 'fair' | 'poor' | 'damaged';
 export type ColumnKey = 'name' | 'category' | 'serial' | 'barcode' | 'condition' | 'location' | 'quantity' | 'unitValue' | 'totalValue';
@@ -107,34 +108,24 @@ export const truckLabel = (t: TruckInfo) => (t.identifier ? `${t.name} (${t.iden
 
 // ---------- loading ----------
 
-const PAGE = 1000; // Supabase returns at most 1000 rows per request.
-
 /** Everything a report needs, limited to one company (RLS enforces this too). */
 export async function loadReportData(companyId: string): Promise<ReportData> {
-  const [company, categories, trucks, assignments] = await Promise.all([
+  const [company, categories, trucks, assignments, rawItems] = await Promise.all([
     supabase.from('companies').select('name').eq('id', companyId).single(),
-    supabase.from('categories').select('id, name').eq('company_id', companyId).order('name'),
-    supabase.from('trucks').select('id, name, identifier').eq('company_id', companyId).order('name'),
-    supabase.from('user_truck_assignments').select('user_id, truck_id').eq('company_id', companyId),
-  ]);
-  if (categories.error) throw categories.error;
-  if (trucks.error) throw trucks.error;
-
-  const rawItems: Record<string, unknown>[] = [];
-  for (let from = 0; ; from += PAGE) {
-    const { data, error } = await supabase
+    fetchAll(() => supabase.from('categories').select('id, name').eq('company_id', companyId).order('name').order('id')),
+    fetchAll(() => supabase.from('trucks').select('id, name, identifier').eq('company_id', companyId).order('name').order('id')),
+    // Best effort: the report still works without tech names.
+    fetchAll(() => supabase.from('user_truck_assignments').select('user_id, truck_id').eq('company_id', companyId).order('id'))
+      .catch((err) => { console.error('Could not load van assignments:', err); return []; }),
+    fetchAll<Record<string, unknown>>(() => supabase
       .from('inventory_items')
       .select('id, name, category_id, serial_number, barcode, condition, location_type, assigned_truck_id, unit_price, group_id')
       .eq('company_id', companyId)
-      .order('id')
-      .range(from, from + PAGE - 1);
-    if (error) throw error;
-    rawItems.push(...(data ?? []));
-    if (!data || data.length < PAGE) break;
-  }
+      .order('id')),
+  ]);
 
-  const categoryName = new Map((categories.data ?? []).map((c) => [c.id as string, c.name as string]));
-  const truckList: TruckInfo[] = (trucks.data ?? []).map((t) => ({ id: t.id, name: t.name, identifier: t.identifier ?? '' }));
+  const categoryName = new Map(categories.map((c) => [c.id as string, c.name as string]));
+  const truckList: TruckInfo[] = trucks.map((t) => ({ id: t.id, name: t.name, identifier: t.identifier ?? '' }));
   const truckById = new Map(truckList.map((t) => [t.id, t]));
 
   const items: ReportItem[] = rawItems.map((r) => {
@@ -159,7 +150,7 @@ export async function loadReportData(companyId: string): Promise<ReportData> {
 
   // Tech names per van (best effort: the report still works without them).
   const truckTechs: Record<string, string[]> = {};
-  const userIds = [...new Set((assignments.data ?? []).map((a) => a.user_id as string))];
+  const userIds = [...new Set(assignments.map((a) => a.user_id as string))];
   if (userIds.length) {
     const { data: people } = await supabase
       .from('user_profiles')
@@ -171,7 +162,7 @@ export async function loadReportData(companyId: string): Promise<ReportData> {
         .filter((p) => p.is_active !== false)
         .map((p) => [p.id as string, [p.first_name, p.last_name].filter(Boolean).join(' ') || (p.email as string) || 'Unnamed']),
     );
-    for (const a of assignments.data ?? []) {
+    for (const a of assignments) {
       const name = nameById.get(a.user_id as string);
       if (name && a.truck_id) (truckTechs[a.truck_id as string] ??= []).push(name);
     }
@@ -180,7 +171,7 @@ export async function loadReportData(companyId: string): Promise<ReportData> {
   return {
     companyName: (company.data?.name as string) ?? '',
     items,
-    categories: (categories.data ?? []).map((c) => ({ id: c.id, name: c.name })),
+    categories: categories.map((c) => ({ id: c.id, name: c.name })),
     trucks: truckList,
     truckTechs,
   };

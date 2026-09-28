@@ -5,6 +5,7 @@ import { Badge } from '@/components/ui/badge';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { UserCheck, Activity, Package, Clock, Truck, Wrench, ArrowRightLeft, Loader2 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
+import { fetchAll } from '@/lib/fetchAll';
 import { useToast } from '@/hooks/use-toast';
 import { useAuth } from '@/contexts/AuthContext';
 
@@ -85,14 +86,16 @@ export const TechManagement: React.FC = () => {
       let toolCounts: Record<string, number> = {};
       
       if (truckIds.length > 0) {
-        const { data: toolsData } = await supabase
+        const toolsData: { assigned_truck_id: string }[] = await fetchAll(() => supabase
           .from('inventory_items')
           .select('assigned_truck_id')
           .eq('company_id', userProfile.company_id)
           .eq('location_type', 'truck')
-          .in('assigned_truck_id', truckIds);
+          .in('assigned_truck_id', truckIds)
+          .order('id'))
+          .catch((err) => { console.error('Error counting van tools:', err); return []; });
 
-        toolCounts = (toolsData || []).reduce((acc, tool) => {
+        toolCounts = toolsData.reduce((acc, tool) => {
           acc[tool.assigned_truck_id] = (acc[tool.assigned_truck_id] || 0) + 1;
           return acc;
         }, {} as Record<string, number>);

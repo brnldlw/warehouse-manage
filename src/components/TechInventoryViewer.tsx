@@ -7,6 +7,7 @@ import { Badge } from '@/components/ui/badge';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Package, User, Search, Truck, Wrench, Image, AlertCircle } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
+import { fetchAll } from '@/lib/fetchAll';
 import { useToast } from '@/hooks/use-toast';
 import { useAuth } from '@/contexts/AuthContext';
 
@@ -131,23 +132,24 @@ export const TechInventoryViewer: React.FC = () => {
       }
 
       // Get tools assigned to this tech's truck
-      const { data: toolsData, error: toolsError } = await supabase
+      const toolsData = await fetchAll(() => supabase
         .from('inventory_items')
         .select('id, name, description, serial_number, barcode, condition, category_id, image_url, unit_price, group_id')
         .eq('company_id', userProfile.company_id)
         .eq('location_type', 'truck')
         .eq('assigned_truck_id', tech.truck_id)
-        .order('name');
+        .order('name')
+        .order('id'));
 
-      if (toolsError) throw toolsError;
-
-      // Get categories
-      const { data: categoriesData } = await supabase
+      // Get categories (best effort: tools still show without category names)
+      const categoriesData: { id: string; name: string; color: string }[] = await fetchAll(() => supabase
         .from('categories')
         .select('id, name, color')
-        .eq('company_id', userProfile.company_id);
+        .eq('company_id', userProfile.company_id)
+        .order('id'))
+        .catch((err) => { console.error('Error loading categories:', err); return []; });
 
-      const categoryMap = (categoriesData || []).reduce((acc, cat) => {
+      const categoryMap = categoriesData.reduce((acc, cat) => {
         acc[cat.id] = { name: cat.name, color: cat.color };
         return acc;
       }, {} as Record<string, { name: string; color: string }>);

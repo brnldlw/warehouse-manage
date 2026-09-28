@@ -8,6 +8,7 @@ import { Badge } from '@/components/ui/badge';
 import { Plus, Minus, Package, FileText, CheckCircle, ShoppingCart, AlertCircle, Image } from 'lucide-react';
 import { useAuth } from '@/contexts/AuthContext';
 import { supabase } from '@/lib/supabase';
+import { fetchAll } from '@/lib/fetchAll';
 import { useToast } from '@/hooks/use-toast';
 
 interface Category {
@@ -65,35 +66,28 @@ export const RequestItems: React.FC = () => {
       
             const companyId = profileData.company_id;
       // -------------------------
-      const { data: inventoryData, error: inventoryError } = await supabase
+      const inventoryData = await fetchAll(() => supabase
         .from('inventory_items')
         .select('id, name, quantity, category_id, image_url')
         .eq('company_id', companyId)
-        .order('name');
-      
-      if (inventoryError) {
-        console.error('Supabase inventory error:', inventoryError);
-        throw inventoryError;
-      }
+        .order('name')
+        .order('id'));
 
-      // Fetch categories
-      const { data: categoriesData, error: categoriesError } = await supabase
+      // Fetch categories (this company's only)
+      const categoriesData = await fetchAll(() => supabase
         .from('categories')
-        .select('id, name');
-      
-      if (categoriesError) {
-        console.error('Supabase categories error:', categoriesError);
-        throw categoriesError;
-      }
-      
+        .select('id, name')
+        .eq('company_id', companyId)
+        .order('id'));
+
       // Create category map
-      const categoryMap = (categoriesData || []).reduce((acc, cat) => {
+      const categoryMap = categoriesData.reduce((acc, cat) => {
         acc[cat.id] = cat;
         return acc;
       }, {} as Record<string, Category>);
       
       console.log('Fetched items:', inventoryData);
-      const transformedItems = (inventoryData || []).map(item => ({
+      const transformedItems = inventoryData.map(item => ({
         ...item,
         category: categoryMap[item.category_id]?.name || 'Uncategorized'
       }));
