@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -60,7 +60,7 @@ export const AddTechnicianDialog: React.FC<Props> = ({ open, vans, companyId, us
 
   return (
     <Dialog open={open} onOpenChange={(o) => { if (!o) close(); }}>
-      <DialogContent className="max-w-lg w-[calc(100vw-1rem)] max-h-[92vh] overflow-y-auto">
+      <DialogContent className="max-w-[800px]">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2 text-xl"><UserPlus className="h-5 w-5" /> Add Technician</DialogTitle>
           <DialogDescription className="text-base text-gray-700">
@@ -76,14 +76,14 @@ export const AddTechnicianDialog: React.FC<Props> = ({ open, vans, companyId, us
                 : `${result.name} was added without an email. To sign in the first time, they go to the sign-in page, click "Forgot password?" and enter ${form.email.trim()} — or use "Resend invite" to email them a set-password link.`
             } />
             {result.warning && <FormAlert error={result.warning} />}
-            <div className="flex flex-col sm:flex-row gap-3">
-              <Button className="h-14 text-base flex-1" onClick={() => { setForm(empty); setResult(null); }}>Add another</Button>
-              <Button variant="outline" className="h-14 text-base flex-1 border-2 border-gray-800" onClick={close}>Done</Button>
-            </div>
+            <DialogFooter>
+              <Button variant="outline" className="h-14 text-base border-2 border-gray-800" onClick={close}>Done</Button>
+              <Button className="h-14 text-base" onClick={() => { setForm(empty); setResult(null); }}>Add another</Button>
+            </DialogFooter>
           </div>
         ) : (
           <form onSubmit={submit} className="space-y-4">
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               <div className="space-y-1.5">
                 <Label htmlFor="at-first">First name</Label>
                 <Input id="at-first" className={field} value={form.firstName} onChange={(e) => set('firstName', e.target.value)} autoComplete="off" />
@@ -92,12 +92,12 @@ export const AddTechnicianDialog: React.FC<Props> = ({ open, vans, companyId, us
                 <Label htmlFor="at-last">Last name</Label>
                 <Input id="at-last" className={field} value={form.lastName} onChange={(e) => set('lastName', e.target.value)} autoComplete="off" />
               </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="at-email">Email *</Label>
+                <Input id="at-email" type="email" required className={field} value={form.email} onChange={(e) => set('email', e.target.value)} autoComplete="off" />
+              </div>
             </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="at-email">Email *</Label>
-              <Input id="at-email" type="email" required className={field} value={form.email} onChange={(e) => set('email', e.target.value)} autoComplete="off" />
-            </div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div className="space-y-1.5">
                 <Label htmlFor="at-phone">Phone</Label>
                 <Input id="at-phone" type="tel" className={field} value={form.phone} onChange={(e) => set('phone', e.target.value)} autoComplete="off" />
@@ -128,7 +128,7 @@ export const AddTechnicianDialog: React.FC<Props> = ({ open, vans, companyId, us
               <p className="text-sm text-gray-700">Each van shows its plate and who drives it now.</p>
             </div>
 
-            <fieldset className="space-y-2">
+            <fieldset className="grid grid-cols-1 md:grid-cols-2 gap-2">
               <legend className="text-sm font-semibold text-gray-900 mb-1">How should they get their password?</legend>
               {([
                 ['invite', 'Send invite email (recommended)', 'They get an email with a link to set their own password.'],
@@ -145,13 +145,13 @@ export const AddTechnicianDialog: React.FC<Props> = ({ open, vans, companyId, us
             </fieldset>
 
             <FormAlert error={error} />
-            <div className="flex flex-col sm:flex-row gap-3">
-              <Button type="submit" className="h-14 text-base flex-1 bg-blue-700 hover:bg-blue-800 text-white" disabled={saving}>
+            <DialogFooter>
+              <Button type="button" variant="outline" className="h-14 text-base border-2 border-gray-800" onClick={close}>Cancel</Button>
+              <Button type="submit" className="h-14 text-base bg-blue-700 hover:bg-blue-800 text-white" disabled={saving}>
                 {saving ? <Loader2 className="h-5 w-5 mr-2 animate-spin" /> : form.mode === 'invite' ? <Mail className="h-5 w-5 mr-2" /> : <UserPlus className="h-5 w-5 mr-2" />}
                 {saving ? 'Adding…' : form.mode === 'invite' ? 'Add and send invite' : 'Add technician'}
               </Button>
-              <Button type="button" variant="outline" className="h-14 text-base border-2 border-gray-800" onClick={close}>Cancel</Button>
-            </div>
+            </DialogFooter>
           </form>
         )}
       </DialogContent>

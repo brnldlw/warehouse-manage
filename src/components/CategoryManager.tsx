@@ -4,7 +4,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import { Label } from '@/components/ui/label';
 import { Plus, Edit, Trash2, Tag, Image, X, Loader2 } from 'lucide-react';
 import { useInventory } from '@/contexts/InventoryContext';
@@ -222,10 +222,10 @@ const CategoryManager: React.FC = () => {
                     )}
                   </div>
                 </div>
-                <div className="flex gap-2 pt-4">
-                  <Button 
-                    type="submit" 
-                    className="flex-1"
+                <DialogFooter>
+                  <Button
+                    type="submit"
+                    className="h-12 sm:order-2"
                     disabled={submitting}
                   >
                     {submitting ? (
@@ -240,6 +240,7 @@ const CategoryManager: React.FC = () => {
                   <Button
                     type="button"
                     variant="outline"
+                    className="h-12"
                     onClick={() => {
                       setIsDialogOpen(false);
                       setEditingCategory(null);
@@ -248,7 +249,7 @@ const CategoryManager: React.FC = () => {
                   >
                     Cancel
                   </Button>
-                </div>
+                </DialogFooter>
               </form>
             </DialogContent>
           </Dialog>

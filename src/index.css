@@ -210,6 +210,26 @@
   .label-preview .label-cell { outline: 1px dashed #d1d5db; }
 }
 
+/* ---------- Popups (components/ui/dialog.tsx, alert-dialog.tsx) ----------
+   At most 90% of the window tall ("dvh" follows the phone's visible height when the
+   keyboard or browser bars show). The middle scrolls with a scroll bar that stays visible. */
+.dialog-shell { max-height: 90vh; max-height: 90dvh; }
+.dialog-body {
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  scrollbar-color: #6b7280 #e5e7eb;
+}
+/* Bottom space only when there is no sticky button bar: browsers pin sticky elements to the
+   inside of the padding, which would leave a strip of content showing under the buttons. */
+.dialog-body:not(:has(.dialog-sticky-footer)) { padding-bottom: 1.5rem; }
+.dialog-body::-webkit-scrollbar { width: 10px; }
+.dialog-body::-webkit-scrollbar-track { background: #e5e7eb; }
+.dialog-body::-webkit-scrollbar-thumb { background: #6b7280; border-radius: 6px; border: 2px solid #e5e7eb; }
+/* Phones only show a scroll bar while scrolling, so a soft shadow under the title and above
+   the buttons shows that the middle continues underneath them. */
+.dialog-fixed-header { box-shadow: 0 4px 6px -4px rgba(0, 0, 0, 0.18); position: relative; z-index: 1; }
+.dialog-sticky-footer { box-shadow: 0 -4px 6px -4px rgba(0, 0, 0, 0.18); }
+
 /* The print portal is invisible on screen. */
 .print-root { display: none; }
 

@@ -1365,7 +1365,7 @@ export const InventoryManager: React.FC = () => {
       {/* Edit Dialog */}
       {editingItem && (
         <Dialog open={!!editingItem} onOpenChange={() => cancelEdit()}>
-          <DialogContent className="max-w-2xl">
+          <DialogContent className="max-w-[800px]">
             <DialogHeader>
               <DialogTitle className="flex items-center gap-2">
                 <Edit className="h-5 w-5" />
