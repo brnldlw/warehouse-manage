@@ -13,6 +13,9 @@ import {
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { fetchAll } from '@/lib/fetchAll';
+import { matchesSearch } from '@/lib/search';
+import { SearchBox } from '@/components/SearchBox';
+import { ToolUsageReport } from '@/components/ToolUsageReport';
 import { useAuth } from '@/contexts/AuthContext';
 import { useToast } from '@/hooks/use-toast';
 
@@ -51,6 +54,8 @@ export const ReportsPanel: React.FC = () => {
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
   const [actionFilter, setActionFilter] = useState<string>('all');
+  const [search, setSearch] = useState('');
+  const [reportTab, setReportTab] = useState<'activity' | 'usage'>('activity');
   const [trucks, setTrucks] = useState<{ id: string; name: string }[]>([]);
 
   useEffect(() => {
@@ -241,8 +246,14 @@ export const ReportsPanel: React.FC = () => {
     return '';
   };
 
+  const visibleActivities = activities.filter((a) => matchesSearch(
+    search, a.item_name, a.user_name, a.action, formatTransferDetails(a.details),
+    a.details?.serial_number, a.details?.location, a.details?.condition,
+  ));
+
+  // Exports exactly what's listed (date/action filters and the search box).
   const exportToCSV = () => {
-    if (activities.length === 0) {
+    if (visibleActivities.length === 0) {
       toast({
         title: 'No data',
         description: 'No activities to export',
@@ -252,7 +263,7 @@ export const ReportsPanel: React.FC = () => {
     }
 
     const headers = ['Date', 'Action', 'Tool Name', 'Details', 'User'];
-    const rows = activities.map(a => [
+    const rows = visibleActivities.map(a => [
       new Date(a.timestamp).toLocaleString(),
       a.action,
       a.item_name,
@@ -290,8 +301,29 @@ export const ReportsPanel: React.FC = () => {
     );
   }
 
+  const tabSwitch = (
+    <div className="flex rounded-md border-2 border-gray-800 overflow-hidden w-fit" role="tablist" aria-label="Report">
+      {([['activity', 'Activity history'], ['usage', 'Tool usage']] as const).map(([key, label]) => (
+        <button key={key} type="button" role="tab" aria-selected={reportTab === key} onClick={() => setReportTab(key)}
+          className={`h-12 px-5 text-base font-medium ${reportTab === key ? 'bg-gray-900 text-white' : 'bg-white text-gray-900'}`}>
+          {label}
+        </button>
+      ))}
+    </div>
+  );
+
+  if (reportTab === 'usage') {
+    return (
+      <div className="space-y-6">
+        {tabSwitch}
+        <ToolUsageReport />
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-6">
+      {tabSwitch}
       {/* Summary Cards */}
       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
         <Card>
@@ -433,6 +465,15 @@ export const ReportsPanel: React.FC = () => {
             </div>
           </div>
 
+          <SearchBox
+            value={search}
+            onChange={setSearch}
+            placeholder="Search tool, person, van or serial…"
+            shown={visibleActivities.length}
+            total={activities.length}
+            noun="activities"
+          />
+
           {/* Activity Table */}
           <div className="border rounded-lg overflow-hidden">
             <Table>
@@ -446,14 +487,14 @@ export const ReportsPanel: React.FC = () => {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {activities.length === 0 ? (
+                {visibleActivities.length === 0 ? (
                   <TableRow>
                     <TableCell colSpan={5} className="text-center py-8 text-gray-500">
-                      No activity logs found for the selected filters
+                      {search && activities.length ? 'No activities match your search' : 'No activity logs found for the selected filters'}
                     </TableCell>
                   </TableRow>
                 ) : (
-                  activities.map((activity) => (
+                  visibleActivities.map((activity) => (
                     <TableRow key={activity.id}>
                       <TableCell className="whitespace-nowrap">
                         <div className="flex items-center gap-2">
@@ -498,11 +539,6 @@ export const ReportsPanel: React.FC = () => {
             </Table>
           </div>
 
-          {activities.length > 0 && (
-            <p className="text-sm text-gray-500 text-center">
-              Showing {activities.length} activities
-            </p>
-          )}
         </CardContent>
       </Card>
     </div>

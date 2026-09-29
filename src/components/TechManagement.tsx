@@ -1,13 +1,22 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { UserCheck, Activity, Package, Clock, Truck, Wrench, ArrowRightLeft, Loader2 } from 'lucide-react';
+import {
+  UserCheck, Activity, Package, Clock, Truck, Wrench, ArrowRightLeft, Loader2, UserPlus, Mail,
+  ChevronUp, ChevronDown, ChevronsUpDown,
+} from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { fetchAll } from '@/lib/fetchAll';
 import { useToast } from '@/hooks/use-toast';
 import { useAuth } from '@/contexts/AuthContext';
+import { SearchBox } from '@/components/SearchBox';
+import { VanToolsDialog } from '@/components/VanToolsDialog';
+import { AddTechnicianDialog } from '@/components/AddTechnicianDialog';
+import { matchesSearch } from '@/lib/search';
+import { TruckInfo } from '@/lib/inventoryReport';
+import { TechSignInStatus, describeLinkLifetime, getTechSignInStatus, resendTechInvite } from '@/lib/adminTechApi';
 
 interface TechUser {
   id: string;
@@ -17,12 +26,20 @@ interface TechUser {
   phone?: string;
   specialty?: string;
   status: string;
+  is_active?: boolean | null;
   created_at: string;
   truck_id?: string;
   truck_name?: string;
   truck_identifier?: string;
   tool_count?: number;
 }
+
+type StatusTab = 'active' | 'inactive' | 'all';
+type SortKey = 'name' | 'van' | 'status' | 'lastSignIn';
+
+// Older profiles may have no `status`; fall back to is_active.
+const isActiveTech = (t: TechUser) => (t.status ? t.status === 'active' : t.is_active !== false);
+const techName = (t: TechUser) => [t.first_name, t.last_name].filter(Boolean).join(' ') || t.email;
 
 interface TechActivity {
   id: string;
@@ -39,8 +56,17 @@ export const TechManagement: React.FC = () => {
   const [activities, setActivities] = useState<TechActivity[]>([]);
   const [loading, setLoading] = useState(false);
   const [pageLoading, setPageLoading] = useState(true);
+  const [trucks, setTrucks] = useState<TruckInfo[]>([]);
+  const [tab, setTab] = useState<StatusTab>('active');
+  const [search, setSearch] = useState('');
+  const [sort, setSort] = useState<{ key: SortKey; asc: boolean }>({ key: 'name', asc: true });
+  const [signIn, setSignIn] = useState<Record<string, TechSignInStatus> | null>(null);
+  const [signInNote, setSignInNote] = useState<string | null>(null);
+  const [vanTech, setVanTech] = useState<TechUser | null>(null);
+  const [showAdd, setShowAdd] = useState(false);
+  const [resendingId, setResendingId] = useState<string | null>(null);
   const { toast } = useToast();
-  const { userProfile } = useAuth();
+  const { userProfile, isAdmin } = useAuth();
 
   useEffect(() => {
     if (userProfile?.company_id) {
@@ -51,9 +77,47 @@ export const TechManagement: React.FC = () => {
   const loadPageData = async () => {
     setPageLoading(true);
     try {
-      await Promise.all([fetchTechs(), fetchTechActivities()]);
+      await Promise.all([fetchTechs(), fetchTechActivities(), fetchTrucks()]);
     } finally {
       setPageLoading(false);
+    }
+    fetchSignInStatus(); // extra detail from the server; the page works without it
+  };
+
+  const fetchTrucks = async () => {
+    if (!userProfile?.company_id) return;
+    try {
+      const data = await fetchAll(() => supabase
+        .from('trucks').select('id, name, identifier').eq('company_id', userProfile.company_id).order('name').order('id'));
+      setTrucks(data.map((t) => ({ id: t.id, name: t.name, identifier: t.identifier ?? '' })));
+    } catch (error) {
+      console.error('Error fetching trucks:', error);
+    }
+  };
+
+  // Last sign-in comes from the admin-create-tech Edge Function (only the server can see it).
+  const fetchSignInStatus = async () => {
+    if (!isAdmin) return;
+    try {
+      const statuses = await getTechSignInStatus();
+      setSignIn(Object.fromEntries(statuses.map((s) => [s.id, s])));
+      setSignInNote(null);
+    } catch (error) {
+      setSignIn(null);
+      setSignInNote(error instanceof Error ? error.message : String(error));
+    }
+  };
+
+  const resendInvite = async (tech: TechUser) => {
+    setResendingId(tech.id);
+    try {
+      const r = await resendTechInvite(tech.id);
+      toast({ title: 'Invite sent', description: `Sent to ${r.email}. The link works for ${describeLinkLifetime(r.inviteLinkSeconds)}.` });
+      fetchSignInStatus();
+    } catch (error) {
+      toast({ title: 'Could not resend', description: error instanceof Error ? error.message : String(error), variant: 'destructive' });
+    } finally {
+      setResendingId(null);
     }
   };
 
@@ -66,7 +130,7 @@ export const TechManagement: React.FC = () => {
 
       const { data, error } = await supabase
         .from('user_profiles')
-        .select('id, email, first_name, last_name, phone, specialty, status, created_at')
+        .select('id, email, first_name, last_name, phone, specialty, status, is_active, created_at')
         .eq('role', 'tech')
         .eq('company_id', userProfile.company_id)
         .order('created_at', { ascending: false });
@@ -192,15 +256,15 @@ export const TechManagement: React.FC = () => {
     }
   };
 
-  const toggleTechStatus = async (techId: string, currentStatus: string) => {
+  const toggleTechStatus = async (tech: TechUser) => {
     setLoading(true);
     try {
-      const newStatus = currentStatus === 'active' ? 'inactive' : 'active';
-      
+      const newStatus = isActiveTech(tech) ? 'inactive' : 'active';
+
       const { error } = await supabase
         .from('user_profiles')
         .update({ status: newStatus, is_active: newStatus === 'active' })
-        .eq('id', techId);
+        .eq('id', tech.id);
 
       if (error) throw error;
 
@@ -218,6 +282,56 @@ export const TechManagement: React.FC = () => {
     } finally {
       setLoading(false);
     }
+  };
+
+  const counts = {
+    active: techs.filter(isActiveTech).length,
+    inactive: techs.filter((t) => !isActiveTech(t)).length,
+    all: techs.length,
+  };
+  const lastSignIn = (t: TechUser) => signIn?.[t.id]?.lastSignInAt ?? null;
+
+  const inTab = useMemo(
+    () => techs.filter((t) => tab === 'all' || (tab === 'active') === isActiveTech(t)),
+    [techs, tab],
+  );
+  const visibleTechs = useMemo(() => {
+    const list = inTab.filter((t) =>
+      matchesSearch(search, t.first_name, t.last_name, t.email, t.phone, t.truck_name, t.truck_identifier, t.specialty));
+    const dir = sort.asc ? 1 : -1;
+    const text = (a: string, b: string) => a.localeCompare(b, undefined, { sensitivity: 'base', numeric: true });
+    return list.sort((a, b) => {
+      switch (sort.key) {
+        case 'van': return dir * text(a.truck_name ?? '￿', b.truck_name ?? '￿') || text(techName(a), techName(b));
+        case 'status': return dir * (Number(isActiveTech(b)) - Number(isActiveTech(a))) || text(techName(a), techName(b));
+        case 'lastSignIn': {
+          // Never signed in sorts last either way.
+          const la = lastSignIn(a), lb = lastSignIn(b);
+          if (!la || !lb) return la ? -1 : lb ? 1 : text(techName(a), techName(b));
+          return dir * (Date.parse(lb) - Date.parse(la));
+        }
+        default: return dir * text(techName(a), techName(b));
+      }
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [inTab, search, sort, signIn]);
+
+  const sortBy = (key: SortKey) => setSort((s) => ({ key, asc: s.key === key ? !s.asc : true }));
+  const SortHead: React.FC<{ k: SortKey; children: React.ReactNode }> = ({ k, children }) => (
+    <TableHead>
+      <button type="button" onClick={() => sortBy(k)} className="flex items-center gap-1 font-semibold text-gray-900 min-h-[44px]">
+        {children}
+        {sort.key !== k ? <ChevronsUpDown className="h-4 w-4 text-gray-500" /> : sort.asc ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+      </button>
+    </TableHead>
+  );
+
+  const openVan = (tech: TechUser) => {
+    if (!tech.truck_id) {
+      toast({ title: 'No van assigned', description: `${techName(tech)} doesn't have a van yet. Assign one on the Assignments page.` });
+      return;
+    }
+    setVanTech(tech);
   };
 
   return (
@@ -251,7 +365,7 @@ export const TechManagement: React.FC = () => {
               <div>
                 <p className="text-sm font-medium text-gray-600">Active Techs</p>
                 <p className="text-3xl font-bold text-green-600">
-                  {techs.filter(t => t.status === 'active').length}
+                  {counts.active}
                 </p>
               </div>
               <UserCheck className="h-8 w-8 text-green-600" />
@@ -275,29 +389,61 @@ export const TechManagement: React.FC = () => {
       {/* Technicians Table */}
       <Card>
         <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <UserCheck className="h-5 w-5" />
-            Technicians
-          </CardTitle>
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+            <CardTitle className="flex items-center gap-2">
+              <UserCheck className="h-5 w-5" />
+              Technicians
+            </CardTitle>
+            {isAdmin && (
+              <Button className="h-14 px-5 text-base font-semibold bg-blue-700 hover:bg-blue-800 text-white" onClick={() => setShowAdd(true)}>
+                <UserPlus className="h-5 w-5 mr-2" /> Add Technician
+              </Button>
+            )}
+          </div>
         </CardHeader>
-        <CardContent>
+        <CardContent className="space-y-4">
+          <div className="flex flex-col md:flex-row md:items-start gap-3">
+            <div className="flex rounded-md border-2 border-gray-800 overflow-hidden shrink-0" role="tablist" aria-label="Show technicians">
+              {(['active', 'inactive', 'all'] as StatusTab[]).map((t) => (
+                <button key={t} type="button" role="tab" aria-selected={tab === t} onClick={() => setTab(t)}
+                  className={`h-12 px-4 text-base font-medium ${tab === t ? 'bg-gray-900 text-white' : 'bg-white text-gray-900'}`}>
+                  {t === 'active' ? 'Active' : t === 'inactive' ? 'Inactive' : 'All'} ({counts[t]})
+                </button>
+              ))}
+            </div>
+            <SearchBox className="flex-1" value={search} onChange={setSearch}
+              placeholder="Search name, email, phone or van…" shown={visibleTechs.length} total={inTab.length} noun="technicians" />
+          </div>
+          {isAdmin && signInNote && (
+            <p className="text-sm text-gray-700">Last sign-in and "Resend invite" aren't available yet: {signInNote}</p>
+          )}
+          <p className="text-sm text-gray-700">Click a technician to see the tools on their van.</p>
+          <div className="overflow-x-auto">
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>Name</TableHead>
+                <SortHead k="name">Name</SortHead>
                 <TableHead>Email</TableHead>
-                <TableHead>Assigned Van</TableHead>
+                <SortHead k="van">Assigned Van</SortHead>
                 <TableHead>Tools</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead>Joined</TableHead>
+                <SortHead k="status">Status</SortHead>
+                <SortHead k="lastSignIn">Last sign-in</SortHead>
                 <TableHead>Actions</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {techs.map((tech) => (
-                <TableRow key={tech.id}>
+              {visibleTechs.length === 0 && (
+                <TableRow>
+                  <TableCell colSpan={7} className="py-8 text-center text-gray-700">
+                    {search ? 'No technicians match your search.' : `No ${tab === 'all' ? '' : tab + ' '}technicians.`}
+                  </TableCell>
+                </TableRow>
+              )}
+              {visibleTechs.map((tech) => (
+                <TableRow key={tech.id} className="cursor-pointer hover:bg-gray-50" onClick={() => openVan(tech)}>
                   <TableCell className="font-medium">
-                    {tech.first_name} {tech.last_name}
+                    {techName(tech)}
+                    {tech.phone && <span className="block text-sm font-normal text-gray-600">{tech.phone}</span>}
                   </TableCell>
                   <TableCell>{tech.email}</TableCell>
                   <TableCell>
@@ -318,29 +464,57 @@ export const TechManagement: React.FC = () => {
                     </div>
                   </TableCell>
                   <TableCell>
-                    <Badge variant={tech.status === 'active' ? 'default' : 'secondary'}>
-                      {tech.status}
+                    <Badge variant={isActiveTech(tech) ? 'default' : 'secondary'}>
+                      {isActiveTech(tech) ? 'active' : 'inactive'}
                     </Badge>
                   </TableCell>
-                  <TableCell>
-                    {new Date(tech.created_at).toLocaleDateString()}
+                  <TableCell className="whitespace-nowrap">
+                    {!signIn ? <span className="text-gray-500">—</span>
+                      : lastSignIn(tech) ? new Date(lastSignIn(tech)!).toLocaleString()
+                      : <span className="text-orange-700">Never</span>}
                   </TableCell>
-                  <TableCell>
-                    <Button
-                      size="sm"
-                      variant={tech.status === 'active' ? 'destructive' : 'default'}
-                      onClick={() => toggleTechStatus(tech.id, tech.status)}
-                      disabled={loading}
-                    >
-                      {tech.status === 'active' ? 'Deactivate' : 'Activate'}
-                    </Button>
+                  <TableCell onClick={(e) => e.stopPropagation()}>
+                    <div className="flex flex-wrap gap-2">
+                      <Button
+                        size="sm"
+                        className="h-11"
+                        variant={isActiveTech(tech) ? 'destructive' : 'default'}
+                        onClick={() => toggleTechStatus(tech)}
+                        disabled={loading}
+                      >
+                        {isActiveTech(tech) ? 'Deactivate' : 'Activate'}
+                      </Button>
+                      {isAdmin && signIn && signIn[tech.id] && !lastSignIn(tech) && (
+                        <Button size="sm" variant="outline" className="h-11 border-2" disabled={resendingId === tech.id}
+                          onClick={() => resendInvite(tech)}>
+                          {resendingId === tech.id ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : <Mail className="h-4 w-4 mr-1" />}
+                          Resend invite
+                        </Button>
+                      )}
+                    </div>
                   </TableCell>
                 </TableRow>
               ))}
             </TableBody>
           </Table>
+          </div>
         </CardContent>
       </Card>
+
+      {vanTech && vanTech.truck_id && (
+        <VanToolsDialog
+          truck={{ id: vanTech.truck_id, name: vanTech.truck_name ?? 'Van', identifier: vanTech.truck_identifier ?? '' }}
+          heading={`${techName(vanTech)}'s van`}
+          techNames={techs.filter((t) => t.truck_id === vanTech.truck_id).map(techName)}
+          onClose={() => setVanTech(null)}
+        />
+      )}
+      <AddTechnicianDialog
+        open={showAdd}
+        trucks={trucks}
+        onClose={() => setShowAdd(false)}
+        onCreated={() => { fetchTechs(); fetchSignInStatus(); }}
+      />
 
       {/* Recent Activities */}
       <Card>

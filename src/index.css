@@ -193,6 +193,23 @@
 .sheet-line-label { display: block; font-size: 8pt; }
 .sheet-date { width: 50%; }
 
+/* Label sheets (Barcode Generator, Edit Tool). Positions are in inches on US Letter paper. */
+.label-doc { color: #000; background: #fff; font-family: Arial, Helvetica, sans-serif; }
+.label-page { position: relative; width: 8.5in; height: 11in; overflow: hidden; break-after: page; page-break-after: always; }
+.label-page:last-child { break-after: auto; page-break-after: auto; }
+.label-cell { position: absolute; box-sizing: border-box; padding: 0.06in 0.08in; overflow: hidden; }
+.label-row { display: flex; align-items: center; gap: 0.08in; height: 100%; }
+.label-text { min-width: 0; flex: 1; line-height: 1.15; }
+.label-code { font-family: 'Courier New', monospace; font-weight: 700; letter-spacing: 0.02em; white-space: nowrap; }
+.label-name { font-weight: 700; display: -webkit-box; -webkit-box-orient: vertical; overflow: hidden; }
+.label-detail { color: #000; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.label-single { height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 0.2in; text-align: center; }
+@media screen {
+  /* On-screen preview: show the paper edge. */
+  .label-preview .label-page { outline: 1px solid #9ca3af; margin: 0 auto 16px; transform-origin: top left; }
+  .label-preview .label-cell { outline: 1px dashed #d1d5db; }
+}
+
 /* The print portal is invisible on screen. */
 .print-root { display: none; }
 

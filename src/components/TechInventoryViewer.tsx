@@ -8,6 +8,8 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Package, User, Search, Truck, Wrench, Image, AlertCircle } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { fetchAll } from '@/lib/fetchAll';
+import { matchesSearch } from '@/lib/search';
+import { SearchBox } from '@/components/SearchBox';
 import { useToast } from '@/hooks/use-toast';
 import { useAuth } from '@/contexts/AuthContext';
 
@@ -192,9 +194,7 @@ export const TechInventoryViewer: React.FC = () => {
   };
 
   const filteredTools = vanTools.filter(tool =>
-    tool.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    (tool.serial_number && tool.serial_number.toLowerCase().includes(searchTerm.toLowerCase())) ||
-    (tool.barcode && tool.barcode.toLowerCase().includes(searchTerm.toLowerCase()))
+    matchesSearch(searchTerm, tool.name, tool.serial_number, tool.barcode, tool.category_name, tool.condition, tool.description)
   );
 
   // Group filtered tools by group_id
@@ -300,17 +300,15 @@ export const TechInventoryViewer: React.FC = () => {
                 </div>
                 
                 {selectedTech.truck_id && (
-                  <div className="flex-1 max-w-md">
-                    <div className="relative">
-                      <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
-                      <Input
-                        placeholder="Search by name, serial number, or barcode..."
-                        value={searchTerm}
-                        onChange={(e) => setSearchTerm(e.target.value)}
-                        className="pl-10"
-                      />
-                    </div>
-                  </div>
+                  <SearchBox
+                    className="flex-1 max-w-md"
+                    value={searchTerm}
+                    onChange={setSearchTerm}
+                    placeholder="Search name, serial, barcode or category…"
+                    shown={filteredTools.length}
+                    total={vanTools.length}
+                    noun="tools"
+                  />
                 )}
               </div>
             </CardContent>

@@ -15,12 +15,17 @@ import { useAuth } from '@/contexts/AuthContext';
 import { 
   Package, Plus, Trash2, Upload, Image, X, Edit, 
   ArrowRightLeft, Warehouse, Truck, Search,
-  ChevronDown, ChevronUp, MoreHorizontal, Loader2, Printer, Download, FileText, FileSpreadsheet
+  ChevronDown, ChevronUp, MoreHorizontal, Loader2, Printer, Download, FileText, FileSpreadsheet, Merge
 } from 'lucide-react';
 import { BulkImport } from './BulkImport';
 import { uploadItemImage, deleteItemImage, validateImageFile } from '@/lib/imageUtils';
 import { usePrint } from '@/hooks/use-print';
 import { fetchAll } from '@/lib/fetchAll';
+import { matchesSearch } from '@/lib/search';
+import { SearchBox } from './SearchBox';
+import { BarcodeField } from './labels/BarcodeField';
+import { MergeDuplicatesDialog } from './MergeDuplicatesDialog';
+import { describeConflict, findToolWithBarcode } from '@/lib/toolCodes';
 import { PrintPortal } from './print/PrintPortal';
 import { InventoryReportDocument } from './print/InventoryReportDocument';
 import {
@@ -60,7 +65,8 @@ export const InventoryManager: React.FC = () => {
   const [items, setItems] = useState<InventoryItem[]>([]);
   const [trucks, setTrucks] = useState<TruckOption[]>([]);
   const { categories, loading: categoriesLoading } = useInventory();
-  const { userProfile } = useAuth();
+  const { userProfile, isAdmin } = useAuth();
+  const [showMerge, setShowMerge] = useState(false);
   const [itemForm, setItemForm] = useState({
     name: '',
     description: '',
@@ -604,8 +610,23 @@ export const InventoryManager: React.FC = () => {
       return;
     }
 
+    // The one physical tool being edited, when there is exactly one (its serial and barcode
+    // can be edited). A "group" of one counts too.
+    const unit = !editingGroup ? editingItem : editingGroup.items.length === 1 ? editingGroup.items[0] : null;
+    const newBarcode = editForm.barcode.trim();
+
     setLoading(true);
     try {
+      if (unit && newBarcode && userProfile?.company_id) {
+        const clash = await findToolWithBarcode(userProfile.company_id, newBarcode, unit.id);
+        if (clash) {
+          toast({ title: "Barcode already used", description: describeConflict(newBarcode, clash), variant: "destructive" });
+          setLoading(false);
+          return;
+        }
+      }
+      const barcodeChanged = !!unit && newBarcode !== (unit.barcode || '').trim();
+
       if (editingGroup) {
         // --- GROUP EDIT ---
         const baseData = {
@@ -623,6 +644,14 @@ export const InventoryManager: React.FC = () => {
           .update(baseData)
           .in('id', groupItemIds);
         if (updateError) throw updateError;
+
+        if (unit) {
+          const { error: unitError } = await supabase
+            .from('inventory_items')
+            .update({ barcode: newBarcode || null, serial_number: editForm.serialNumber.trim() || null })
+            .eq('id', unit.id);
+          if (unitError) throw unitError;
+        }
 
         // Handle image update for every item in the group
         if (editForm.image) {
@@ -671,9 +700,10 @@ export const InventoryManager: React.FC = () => {
         toast({ title: "Success", description: `Group updated — ${newQty} item${newQty !== 1 ? 's' : ''}` });
       } else {
         // --- SINGLE ITEM EDIT ---
+        // Barcode was checked above (with a message naming the other tool); check serial here.
         const duplicate = await checkForDuplicate(
           editForm.serialNumber || null,
-          editForm.barcode || null,
+          null,
           editingItem.id
         );
         if (duplicate) {
@@ -690,7 +720,7 @@ export const InventoryManager: React.FC = () => {
           name: editForm.name,
           description: editForm.description,
           category_id: editForm.categoryId,
-          barcode: editForm.barcode || null,
+          barcode: newBarcode || null,
           serial_number: editForm.serialNumber || null,
           condition: editForm.condition,
           unit_price: editForm.price
@@ -722,9 +752,20 @@ export const InventoryManager: React.FC = () => {
         toast({ title: "Success", description: "Tool updated successfully" });
       }
 
+      if (barcodeChanged && unit && userProfile?.company_id) {
+        const { data: { user } } = await supabase.auth.getUser();
+        await supabase.from('activity_logs').insert({
+          company_id: userProfile.company_id, user_id: user?.id, action: 'barcode_assigned', item_id: unit.id,
+          details: { item_id: unit.id, item_name: editForm.name, barcode: newBarcode || null, previous_barcode: unit.barcode || null },
+        });
+      }
+
       cancelEdit();
     } catch (error: any) {
-      toast({ title: "Error", description: error.message || "Failed to update tool", variant: "destructive" });
+      const description = error?.code === '23505'
+        ? "That barcode is already used by a tool in another company (codes must be unique across the whole app). Generate a different one."
+        : error.message || "Failed to update tool";
+      toast({ title: "Error", description, variant: "destructive" });
     }
     setLoading(false);
   };
@@ -738,6 +779,15 @@ export const InventoryManager: React.FC = () => {
     };
     return colors[condition] || colors.good;
   };
+
+  /** One unit inside a group: "#2 · SN 12345 · BC CAP-00012 · Van 3 · Good". */
+  const unitLabel = (item: InventoryItem, idx: number) => [
+    `#${idx + 1}`,
+    item.serialNumber && `SN ${item.serialNumber}`,
+    item.barcode && `BC ${item.barcode}`,
+    item.locationType === 'warehouse' ? 'Warehouse' : item.assignedTruckName || 'Unknown van',
+    (item.condition || 'good').charAt(0).toUpperCase() + (item.condition || 'good').slice(1),
+  ].filter(Boolean).join(' · ');
 
   const getLocationDisplay = (item: InventoryItem) => {
     if (item.locationType === 'warehouse') {
@@ -839,10 +889,14 @@ export const InventoryManager: React.FC = () => {
   // Filter and sort items
   const filteredItems = items
     .filter(item => {
-      const matchesSearch = 
-        item.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        item.serialNumber?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        item.barcode?.toLowerCase().includes(searchTerm.toLowerCase());
+      const matchesText = matchesSearch(
+        searchTerm,
+        item.name,
+        item.serialNumber,
+        item.barcode,
+        getCategoryName(item.categoryId),
+        item.locationType === 'warehouse' ? 'Warehouse' : item.assignedTruckName,
+      );
       
       const matchesLocation = 
         filterLocation === 'all' || 
@@ -857,7 +911,7 @@ export const InventoryManager: React.FC = () => {
         filterCategory === 'all' || 
         item.categoryId === filterCategory;
 
-      return matchesSearch && matchesLocation && matchesTruck && matchesCategory;
+      return matchesText && matchesLocation && matchesTruck && matchesCategory;
     })
     .sort((a, b) => {
       let comparison = 0;
@@ -1002,6 +1056,12 @@ export const InventoryManager: React.FC = () => {
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
+          {isAdmin && (
+            <Button variant="outline" onClick={() => setShowMerge(true)}>
+              <Merge className="h-4 w-4 mr-2" />
+              Merge duplicates
+            </Button>
+          )}
           <Button
             variant="outline"
             onClick={() => setShowBulkImport(!showBulkImport)}
@@ -1239,7 +1299,7 @@ export const InventoryManager: React.FC = () => {
                   </p>
                 )}
               </div>
-              {!editingGroup && (
+              {(!editingGroup || editingGroup.items.length === 1) && (
                 <>
                   <div>
                     <Label htmlFor="edit-serial">Serial Number</Label>
@@ -1249,12 +1309,15 @@ export const InventoryManager: React.FC = () => {
                       onChange={(e) => setEditForm(prev => ({ ...prev, serialNumber: e.target.value }))}
                     />
                   </div>
-                  <div>
-                    <Label htmlFor="edit-barcode">Barcode</Label>
-                    <Input
-                      id="edit-barcode"
+                  <div className="md:col-span-2">
+                    <BarcodeField
                       value={editForm.barcode}
-                      onChange={(e) => setEditForm(prev => ({ ...prev, barcode: e.target.value }))}
+                      onChange={(v) => setEditForm(prev => ({ ...prev, barcode: v }))}
+                      companyId={userProfile?.company_id}
+                      companyName={companyName}
+                      toolId={(editingGroup ? editingGroup.items[0] : editingItem).id}
+                      toolName={editForm.name}
+                      detail={editForm.serialNumber ? `SN ${editForm.serialNumber}` : undefined}
                     />
                   </div>
                 </>
@@ -1470,17 +1533,15 @@ export const InventoryManager: React.FC = () => {
       <Card>
         <CardContent className="pt-4">
           <div className="flex flex-col md:flex-row gap-4">
-            <div className="flex-1">
-              <div className="relative">
-                <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
-                <Input
-                  placeholder="Search by name, serial number, or barcode..."
-                  value={searchTerm}
-                  onChange={(e) => setSearchTerm(e.target.value)}
-                  className="pl-10"
-                />
-              </div>
-            </div>
+            <SearchBox
+              className="flex-1"
+              value={searchTerm}
+              onChange={setSearchTerm}
+              placeholder="Search name, serial, barcode, category or van…"
+              shown={filteredItems.length}
+              total={items.length}
+              noun="tools"
+            />
             <Select value={filterLocation} onValueChange={(value: any) => setFilterLocation(value)}>
               <SelectTrigger className="w-full md:w-40">
                 <SelectValue placeholder="Location" />
@@ -1704,9 +1765,7 @@ export const InventoryManager: React.FC = () => {
                               </div>
                             </TableCell>
                             <TableCell>
-                              <p className="text-sm text-gray-600 pl-6">
-                                {item.serialNumber ? `SN: ${item.serialNumber}` : item.barcode ? `BC: ${item.barcode}` : `Item #${idx + 1}`}
-                              </p>
+                              <p className="text-sm text-gray-800 pl-6">{unitLabel(item, idx)}</p>
                             </TableCell>
                             <TableCell></TableCell>
                             <TableCell></TableCell>
@@ -1755,6 +1814,17 @@ export const InventoryManager: React.FC = () => {
         </CardContent>
       </Card>
         </>
+      )}
+      {isAdmin && (
+        <MergeDuplicatesDialog
+          open={showMerge}
+          onClose={() => setShowMerge(false)}
+          tools={items}
+          categories={categories}
+          companyId={userProfile?.company_id}
+          userId={userProfile?.id}
+          onChanged={loadItems}
+        />
       )}
       {printing && (() => {
         const meta = screenReportMeta();
