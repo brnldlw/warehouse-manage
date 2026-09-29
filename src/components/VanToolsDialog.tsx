@@ -10,8 +10,9 @@ import { SearchBox } from '@/components/SearchBox';
 import { PrintPortal } from '@/components/print/PrintPortal';
 import { VanToolSheets } from '@/components/print/VanToolSheets';
 import { matchesSearch } from '@/lib/search';
+import { usePoSupport } from '@/lib/poSupport';
 import {
-  ALL_COLUMN_KEYS, Detail, ReportItem, ReportMeta, TruckInfo, buildRows, cellText, downloadCsv, downloadXlsx,
+  Detail, ReportItem, exportColumnKeys, ReportMeta, TruckInfo, buildRows, cellText, downloadCsv, downloadXlsx,
   exportFileName, formatDateTime, formatMoney, groupRows, loadCompanyName, loadVanItems, sortRows, truckLabel,
 } from '@/lib/inventoryReport';
 
@@ -25,13 +26,14 @@ interface VanToolsDialogProps {
   onClose: () => void;
 }
 
-const EXPORT_COLUMNS = ALL_COLUMN_KEYS.filter((k) => k !== 'location'); // every row is on this van
-
 /** Just the tools on one van: search, totals, printable checklist, CSV/Excel. */
 export const VanToolsDialog: React.FC<VanToolsDialogProps> = ({ truck, techNames = [], heading, onClose }) => {
   const { userProfile } = useAuth();
   const { toast } = useToast();
   const { printing, print } = usePrint();
+  const poSupported = usePoSupport();
+  // Every row is on this van, so no location column; PO columns once the database has them.
+  const EXPORT_COLUMNS = exportColumnKeys(poSupported).filter((k) => k !== 'location');
   const [items, setItems] = useState<ReportItem[]>([]);
   const [companyName, setCompanyName] = useState('');
   const [loading, setLoading] = useState(false);
@@ -60,7 +62,7 @@ export const VanToolsDialog: React.FC<VanToolsDialogProps> = ({ truck, techNames
 
   const allRows = useMemo(() => sortRows(buildRows(items, detail), 'name'), [items, detail]);
   const shownRows = useMemo(
-    () => allRows.filter((r) => matchesSearch(search, r.name, r.category, r.serial, r.barcode, r.condition)),
+    () => allRows.filter((r) => matchesSearch(search, r.name, r.category, r.serial, r.barcode, r.poNumber, r.condition)),
     [allRows, search],
   );
   const toolCount = (rows: typeof allRows) => rows.reduce((n, r) => n + r.quantity, 0);
@@ -122,7 +124,7 @@ export const VanToolsDialog: React.FC<VanToolsDialogProps> = ({ truck, techNames
                 className="flex-1"
                 value={search}
                 onChange={setSearch}
-                placeholder="Search this van: name, category, serial, barcode…"
+                placeholder="Search this van: name, category, serial, barcode, PO…"
                 shown={toolCount(shownRows)}
                 total={toolCount(allRows)}
                 noun="tools"
@@ -149,6 +151,7 @@ export const VanToolsDialog: React.FC<VanToolsDialogProps> = ({ truck, techNames
                       <TableHead>Category</TableHead>
                       <TableHead>Serial #</TableHead>
                       <TableHead>Barcode</TableHead>
+                      {poSupported && <TableHead>PO #</TableHead>}
                       <TableHead>Condition</TableHead>
                       <TableHead className="text-right">Count</TableHead>
                       <TableHead className="text-right">Unit value</TableHead>
@@ -157,7 +160,7 @@ export const VanToolsDialog: React.FC<VanToolsDialogProps> = ({ truck, techNames
                   </TableHeader>
                   <TableBody>
                     {shownRows.length === 0 ? (
-                      <TableRow><TableCell colSpan={9} className="py-8 text-center text-gray-700">No tools match your search.</TableCell></TableRow>
+                      <TableRow><TableCell colSpan={poSupported ? 10 : 9} className="py-8 text-center text-gray-700">No tools match your search.</TableCell></TableRow>
                     ) : shownRows.map((r) => (
                       <TableRow key={r.key}>
                         <TableCell>
@@ -169,6 +172,7 @@ export const VanToolsDialog: React.FC<VanToolsDialogProps> = ({ truck, techNames
                         <TableCell>{r.category}</TableCell>
                         <TableCell className="font-mono text-sm">{r.serial}</TableCell>
                         <TableCell className="font-mono text-sm">{r.barcode}</TableCell>
+                        {poSupported && <TableCell className="text-sm">{r.poNumber}</TableCell>}
                         <TableCell>{r.condition}</TableCell>
                         <TableCell className="text-right">{r.quantity}</TableCell>
                         <TableCell className="text-right whitespace-nowrap">{cellText(r, 'unitValue')}</TableCell>
@@ -177,7 +181,7 @@ export const VanToolsDialog: React.FC<VanToolsDialogProps> = ({ truck, techNames
                     ))}
                     {shownRows.length > 0 && (
                       <TableRow className="font-bold border-t-2 border-gray-800">
-                        <TableCell colSpan={6}>{search ? 'Total (search results)' : 'Total'}</TableCell>
+                        <TableCell colSpan={poSupported ? 7 : 6}>{search ? 'Total (search results)' : 'Total'}</TableCell>
                         <TableCell className="text-right">{toolCount(shownRows)}</TableCell>
                         <TableCell />
                         <TableCell className="text-right whitespace-nowrap">{formatMoney(toolValue(shownRows))}</TableCell>

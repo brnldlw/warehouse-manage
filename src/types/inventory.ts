@@ -32,6 +32,9 @@ export interface InventoryItem {
   assignedBy?: string;
   // Grouping field for quantity display
   groupId?: string;
+  // Purchase info (migration 003; empty when the columns don't exist yet)
+  poNumber?: string;
+  purchaseDate?: string;
 }
 
 export interface User {

@@ -5,9 +5,12 @@
 import * as XLSX from 'xlsx';
 import { supabase } from '@/lib/supabase';
 import { fetchAll } from '@/lib/fetchAll';
+import { formatPurchaseDate, poColumnsAvailable } from '@/lib/poSupport';
 
 export type Condition = 'good' | 'fair' | 'poor' | 'damaged';
-export type ColumnKey = 'name' | 'category' | 'serial' | 'barcode' | 'condition' | 'location' | 'quantity' | 'unitValue' | 'totalValue';
+export type ColumnKey =
+  | 'name' | 'category' | 'serial' | 'barcode' | 'poNumber' | 'purchaseDate' | 'condition' | 'location'
+  | 'quantity' | 'unitValue' | 'totalValue';
 export type GroupBy = 'none' | 'location' | 'category';
 export type SortBy = 'name' | 'category' | 'location';
 export type Detail = 'summary' | 'detailed';
@@ -25,6 +28,8 @@ export const COLUMNS: ColumnDef[] = [
   { key: 'category', label: 'Category', width: 18 },
   { key: 'serial', label: 'Serial #', width: 18 },
   { key: 'barcode', label: 'Barcode', width: 18 },
+  { key: 'poNumber', label: 'PO #', width: 16 },
+  { key: 'purchaseDate', label: 'Purchase Date', width: 14 },
   { key: 'condition', label: 'Condition', width: 11 },
   { key: 'location', label: 'Location / Van', width: 24 },
   { key: 'quantity', label: 'Qty', numeric: true, width: 7 },
@@ -32,6 +37,12 @@ export const COLUMNS: ColumnDef[] = [
   { key: 'totalValue', label: 'Total Value', numeric: true, width: 14 },
 ];
 export const ALL_COLUMN_KEYS = COLUMNS.map((c) => c.key);
+export const PO_COLUMN_KEYS: ColumnKey[] = ['poNumber', 'purchaseDate'];
+/** Printed by default: everything except the PO columns, which are optional. */
+export const DEFAULT_PRINT_COLUMN_KEYS = ALL_COLUMN_KEYS.filter((k) => !PO_COLUMN_KEYS.includes(k));
+/** Columns for exports: all of them, leaving out PO columns until the database has them. */
+export const exportColumnKeys = (poSupported: boolean | null) =>
+  (poSupported ? ALL_COLUMN_KEYS : DEFAULT_PRINT_COLUMN_KEYS);
 export const columnDefs = (keys: ColumnKey[]) => COLUMNS.filter((c) => keys.includes(c.key));
 
 /** One physical tool (one inventory_items row). */
@@ -49,6 +60,10 @@ export interface ReportItem {
   unitPrice: number | null;
   groupId: string | null;
   imageUrl?: string | null;
+  /** '' when not recorded (or the database doesn't have PO columns yet). */
+  poNumber?: string;
+  /** "YYYY-MM-DD" or ''. */
+  purchaseDate?: string;
 }
 
 /** One printed line: a single tool (detailed) or several identical tools (summary). */
@@ -68,6 +83,10 @@ export interface ReportRow {
   unitValue: number | null;
   unitValueVaries: boolean;
   totalValue: number | null;
+  /** One PO, or "PO1, PO2 +3 more" for a summary line. */
+  poNumber: string;
+  /** "YYYY-MM-DD", "Several" or ''. */
+  purchaseDate: string;
 }
 
 export interface ReportGroup {
@@ -112,6 +131,10 @@ export const truckLabel = (t: TruckInfo) => (t.identifier ? `${t.name} (${t.iden
 
 const ITEM_COLUMNS = 'id, name, category_id, serial_number, barcode, condition, location_type, assigned_truck_id, unit_price, group_id, image_url';
 
+/** Ask for the PO columns only when the database has them (migration 003). */
+const itemColumns = async (): Promise<string> =>
+  ((await poColumnsAvailable()) ? `${ITEM_COLUMNS}, po_number, purchase_date` : ITEM_COLUMNS);
+
 /** One inventory_items row -> ReportItem. */
 function toReportItem(r: Record<string, unknown>, categoryName: Map<string, string>, truckById: Map<string, TruckInfo>): ReportItem {
   const truckId = (r.assigned_truck_id as string | null) ?? null;
@@ -131,6 +154,8 @@ function toReportItem(r: Record<string, unknown>, categoryName: Map<string, stri
     unitPrice: Number.isFinite(price) ? price : null,
     groupId: (r.group_id as string | null) ?? null,
     imageUrl: (r.image_url as string | null) ?? null,
+    poNumber: ((r.po_number as string | null) ?? '').trim(),
+    purchaseDate: (r.purchase_date as string | null) ?? '',
   };
 }
 
@@ -141,15 +166,17 @@ export async function loadCompanyName(companyId: string): Promise<string> {
 
 /** Every tool currently on one van (this company only). */
 export async function loadVanItems(companyId: string, truck: TruckInfo): Promise<ReportItem[]> {
+  const cols = await itemColumns();
   const [categories, rawItems] = await Promise.all([
     fetchAll(() => supabase.from('categories').select('id, name').eq('company_id', companyId).order('id')),
     fetchAll<Record<string, unknown>>(() => supabase
       .from('inventory_items')
-      .select(ITEM_COLUMNS)
+      .select(cols)
       .eq('company_id', companyId)
       .eq('location_type', 'truck')
       .eq('assigned_truck_id', truck.id)
-      .order('id')),
+      .order('id')
+      .returns<Record<string, unknown>[]>()),
   ]);
   const categoryName = new Map(categories.map((c) => [c.id as string, c.name as string]));
   return rawItems.map((r) => toReportItem(r, categoryName, new Map([[truck.id, truck]])));
@@ -157,6 +184,7 @@ export async function loadVanItems(companyId: string, truck: TruckInfo): Promise
 
 /** Everything a report needs, limited to one company (RLS enforces this too). */
 export async function loadReportData(companyId: string): Promise<ReportData> {
+  const cols = await itemColumns();
   const [company, categories, trucks, assignments, rawItems] = await Promise.all([
     supabase.from('companies').select('name').eq('id', companyId).single(),
     fetchAll(() => supabase.from('categories').select('id, name').eq('company_id', companyId).order('name').order('id')),
@@ -166,9 +194,10 @@ export async function loadReportData(companyId: string): Promise<ReportData> {
       .catch((err) => { console.error('Could not load van assignments:', err); return []; }),
     fetchAll<Record<string, unknown>>(() => supabase
       .from('inventory_items')
-      .select(ITEM_COLUMNS)
+      .select(cols)
       .eq('company_id', companyId)
-      .order('id')),
+      .order('id')
+      .returns<Record<string, unknown>[]>()),
   ]);
 
   const categoryName = new Map(categories.map((c) => [c.id as string, c.name as string]));
@@ -229,7 +258,18 @@ export function summarizeItems(items: ReportItem[], key: string): ReportRow {
     unitValue: pricesSame ? first.unitPrice : null,
     unitValueVaries: prices.length > 0 && !pricesSame,
     totalValue: prices.length ? prices.reduce((a, b) => a + b, 0) : null,
+    poNumber: listDistinct(items.map((i) => i.poNumber ?? '')),
+    purchaseDate: (() => {
+      const dates = [...new Set(items.map((i) => i.purchaseDate ?? '').filter(Boolean))];
+      return dates.length === 1 ? dates[0] : dates.length > 1 ? 'Several' : '';
+    })(),
   };
+}
+
+/** "PO-1, PO-2, PO-3 +2 more" (blank values ignored). */
+function listDistinct(values: string[], max = 3): string {
+  const distinct = [...new Set(values.map((v) => v.trim()).filter(Boolean))];
+  return distinct.slice(0, max).join(', ') + (distinct.length > max ? ` +${distinct.length - max} more` : '');
 }
 
 export function buildRows(items: ReportItem[], detail: Detail): ReportRow[] {
@@ -305,6 +345,7 @@ export const formatDateTime = (d: Date) =>
 /** Text shown in a printed cell. */
 export function cellText(row: ReportRow, key: ColumnKey): string {
   switch (key) {
+    case 'purchaseDate': return /^\d{4}-\d{2}-\d{2}$/.test(row.purchaseDate) ? formatPurchaseDate(row.purchaseDate) : row.purchaseDate;
     case 'quantity': return String(row.quantity);
     case 'unitValue': return row.unitValue !== null ? formatMoney(row.unitValue) : row.unitValueVaries ? 'varies' : '';
     case 'totalValue': return row.totalValue !== null ? formatMoney(row.totalValue) : '';

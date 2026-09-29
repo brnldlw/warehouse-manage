@@ -11,13 +11,14 @@ import { PrintPortal } from '@/components/print/PrintPortal';
 import { InventoryReportDocument } from '@/components/print/InventoryReportDocument';
 import { VanSheet, VanToolSheets } from '@/components/print/VanToolSheets';
 import {
-  ALL_COLUMN_KEYS, COLUMNS, ColumnKey, Detail, GroupBy, ReportData, ReportMeta, SortBy, WAREHOUSE,
+  ALL_COLUMN_KEYS, COLUMNS, ColumnKey, DEFAULT_PRINT_COLUMN_KEYS, PO_COLUMN_KEYS, Detail, GroupBy, ReportData, ReportMeta, SortBy, WAREHOUSE,
   buildRows, conditionLabel, downloadCsv, downloadXlsx, exportFileName, formatDateTime, groupRows, loadReportData,
   sortRows, truckLabel,
 } from '@/lib/inventoryReport';
 import { ClipboardCheck, FileSpreadsheet, FileText, List, Loader2, Printer } from 'lucide-react';
 import { SearchBox } from '@/components/SearchBox';
 import { matchesSearch } from '@/lib/search';
+import { usePoSupport } from '@/lib/poSupport';
 
 type ReportType = 'list' | 'vanSheet';
 
@@ -60,7 +61,9 @@ export const PrintInventory: React.FC = () => {
   const [groupBy, setGroupBy] = useState<GroupBy>('location');
   const [sortBy, setSortBy] = useState<SortBy>('name');
   const [detail, setDetail] = useState<Detail>('summary');
-  const [columns, setColumns] = useState<ColumnKey[]>(ALL_COLUMN_KEYS);
+  // PO # and Purchase Date are optional columns: off by default.
+  const [columns, setColumns] = useState<ColumnKey[]>(DEFAULT_PRINT_COLUMN_KEYS);
+  const poSupported = usePoSupport();
   const [landscape, setLandscape] = useState(true);
   const [van, setVan] = useState('all'); // van sheet: all | <truck id>
   const [search, setSearch] = useState('');
@@ -93,7 +96,7 @@ export const PrintInventory: React.FC = () => {
         i.locationKey === location) &&
       (category === 'all' || (category === 'none' ? !i.categoryId : i.categoryId === category)) &&
       (condition === 'all' || i.condition === condition) &&
-      matchesSearch(search, i.name, i.serial, i.barcode, i.categoryName, i.locationName));
+      matchesSearch(search, i.name, i.serial, i.barcode, i.poNumber, i.categoryName, i.locationName));
     return groupRows(sortRows(buildRows(items, detail), sortBy), groupBy);
   }, [data, location, category, condition, detail, sortBy, groupBy, search]);
 
@@ -190,7 +193,7 @@ export const PrintInventory: React.FC = () => {
             <SearchBox
               value={search}
               onChange={setSearch}
-              placeholder="Search name, serial, barcode, category or van…"
+              placeholder="Search name, serial, barcode, PO, category or van…"
               shown={listCount}
               total={data?.items.length ?? 0}
               noun="tools"
@@ -260,7 +263,7 @@ export const PrintInventory: React.FC = () => {
           {isList && (
             <Field label="Columns">
               <div className="flex flex-wrap gap-x-6 gap-y-3 pt-1">
-                {COLUMNS.map((c) => (
+                {COLUMNS.filter((c) => poSupported || !PO_COLUMN_KEYS.includes(c.key)).map((c) => (
                   <label key={c.key} className="flex items-center gap-2 text-base cursor-pointer min-h-[44px]">
                     <Checkbox
                       className="h-6 w-6"

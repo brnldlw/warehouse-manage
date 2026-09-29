@@ -12,6 +12,8 @@ import { supabase } from '@/lib/supabase';
 import { useToast } from '@/hooks/use-toast';
 import { uploadItemImage, validateImageFile } from '@/lib/imageUtils';
 import { useAuth } from '@/contexts/AuthContext';
+import { PO_NOT_ENABLED, parsePurchaseDate, usePoSupport } from '@/lib/poSupport';
+import { downloadTableCsv } from '@/lib/tableExport';
 
 interface ImportItem {
   name: string;
@@ -23,7 +25,14 @@ interface ImportItem {
   unit_price?: number;
   quantity?: number;
   image?: File | null;
+  po_number?: string;
+  /** "YYYY-MM-DD" */
+  purchase_date?: string;
 }
+
+const TEMPLATE_HEADERS = ['Name', 'Category', 'Quantity', 'Serial_Number', 'Description', 'Barcode', 'Condition', 'Unit_Price', 'PO_Number', 'Purchase_Date'];
+
+
 
 interface BulkImportProps {
   categories: { id: string; name: string }[];
@@ -41,7 +50,15 @@ export const BulkImport: React.FC<BulkImportProps> = ({ categories, onImportComp
 
   // Required and optional headers for validation
   const REQUIRED_HEADERS = ['name', 'category'];
-  const VALID_HEADERS = ['name', 'category', 'serial_number', 'description', 'barcode', 'condition', 'unit_price', 'quantity'];
+  const VALID_HEADERS = ['name', 'category', 'serial_number', 'description', 'barcode', 'condition', 'unit_price', 'quantity', 'po_number', 'purchase_date'];
+  const poSupported = usePoSupport();
+
+  const downloadTemplate = () => {
+    const example = ['Cordless Drill', categories[0]?.name ?? 'Power Tools', '2', '', '', '', 'good', '149.99', 'PO-1042', '9/28/2026'];
+    downloadTableCsv('tool-import-template.csv',
+      TEMPLATE_HEADERS.map((h) => ({ key: h, label: h })),
+      [Object.fromEntries(TEMPLATE_HEADERS.map((h, i) => [h, example[i]]))]);
+  };
   const OLD_FORMAT_HEADERS = ['min_quantity', 'location']; // Old consumable format
 
   const normalizeHeader = (header: string): string => {
@@ -72,7 +89,7 @@ Please update your file to remove Quantity, Min_Quantity, and Location columns, 
         error: `Missing required columns: "${missingRequired.join(', ')}". 
 
 Required columns: Name, Category
-Optional columns: Serial_Number, Description, Barcode, Condition, Unit_Price`
+Optional columns: Quantity, Serial_Number, Description, Barcode, Condition, Unit_Price, PO_Number, Purchase_Date`
       };
     }
 
@@ -83,7 +100,7 @@ Optional columns: Serial_Number, Description, Barcode, Condition, Unit_Price`
         valid: false,
         error: `Unrecognized columns found: "${unrecognizedHeaders.join(', ')}". 
 
-Valid columns are: Name, Category, Serial_Number, Description, Barcode, Condition, Unit_Price`
+Valid columns are: Name, Category, Quantity, Serial_Number, Description, Barcode, Condition, Unit_Price, PO_Number, Purchase_Date`
       };
     }
 
@@ -92,9 +109,10 @@ Valid columns are: Name, Category, Serial_Number, Description, Barcode, Conditio
 
   // Helper to get value from row with case-insensitive key
   const getRowValue = (row: any, key: string): any => {
-    const normalizedKey = key.toLowerCase();
+    // Same rule as the header check: "PO Number", "po_number" and "PO_Number" all match.
+    const normalizedKey = normalizeHeader(key);
     for (const k of Object.keys(row)) {
-      if (k.toLowerCase() === normalizedKey) {
+      if (normalizeHeader(k) === normalizedKey) {
         return row[k];
       }
     }
@@ -146,7 +164,16 @@ Valid columns are: Name, Category, Serial_Number, Description, Barcode, Conditio
       const unit_price = parseFloat(unitPrice) || 0;
       const qty = parseInt(getRowValue(row, 'quantity')) || 1;
 
+      const purchaseDate = parsePurchaseDate(getRowValue(row, 'purchase_date'));
+      if (purchaseDate === 'invalid') {
+        errors.push(`Row ${index + 1}: Purchase_Date "${getRowValue(row, 'purchase_date')}" isn't a date. Use 9/28/2026 or 2026-09-28.`);
+        return;
+      }
+      const poNumber = getRowValue(row, 'po_number')?.toString().trim() || undefined;
+
       validItems.push({
+        po_number: poNumber,
+        purchase_date: purchaseDate ?? undefined,
         name: name.toString().trim(),
         description: description?.toString().trim(),
         category_id: categoryMatch.id,
@@ -258,7 +285,9 @@ Valid columns are: Name, Category, Serial_Number, Description, Barcode, Conditio
             unit_price: item.unit_price,
             location: 'Warehouse',
             company_id: userProfile.company_id,
-            group_id: groupId
+            group_id: groupId,
+            // Every tool in the row gets the row's PO (only once the database has the columns)
+            ...(poSupported ? { po_number: item.po_number || null, purchase_date: item.purchase_date || null } : {}),
           });
         }
       });
@@ -381,8 +410,11 @@ Valid columns are: Name, Category, Serial_Number, Description, Barcode, Conditio
             <AlertDescription>
               <p className="mb-2">Upload a CSV or Excel file with the following columns:</p>
               <div className="bg-gray-100 p-3 rounded-md font-mono text-sm mb-2">
-                Name, Category, Quantity, Serial_Number, Description, Barcode, Condition, Unit_Price
+                Name, Category, Quantity, Serial_Number, Description, Barcode, Condition, Unit_Price, PO_Number, Purchase_Date
               </div>
+              <Button type="button" variant="outline" className="h-11 border-2 mb-2" onClick={downloadTemplate}>
+                Download template (CSV)
+              </Button>
               <ul className="list-disc list-inside mt-2 space-y-1">
                 <li><strong>Name</strong> (required) - Tool name</li>
                 <li><strong>Category</strong> (required) - Must match existing category</li>
@@ -392,7 +424,10 @@ Valid columns are: Name, Category, Serial_Number, Description, Barcode, Conditio
                 <li><strong>Condition</strong> (optional) - good, fair, poor, or damaged (defaults to "good")</li>
                 <li><strong>Unit_Price</strong> (optional) - Price in dollars</li>
                 <li><strong>Description</strong> (optional)</li>
+                <li><strong>PO_Number</strong> (optional) - Purchase order number; every tool in the row gets it</li>
+                <li><strong>Purchase_Date</strong> (optional) - e.g. 9/28/2026 or 2026-09-28</li>
               </ul>
+              {poSupported === false && <p className="mt-2 text-sm font-medium text-amber-800">{PO_NOT_ENABLED} PO_Number and Purchase_Date will be skipped until then.</p>}
               <p className="mt-3 text-sm text-blue-600 font-medium">💡 Use Quantity to add multiple identical tools at once (e.g., 60 ladders). They'll be grouped for easy management.</p>
               <p className="mt-2 text-sm text-gray-600">Note: All imported tools will be placed in the Warehouse. Serial # and barcode are ignored when quantity &gt; 1.</p>
             </AlertDescription>
@@ -427,6 +462,9 @@ Valid columns are: Name, Category, Serial_Number, Description, Barcode, Conditio
               <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
                 <h3 className="text-lg font-semibold">
                   Preview ({importData.length} rows, {importData.reduce((sum, item) => sum + (item.quantity || 1), 0)} total items)
+                  {poSupported === false && importData.some((i) => i.po_number || i.purchase_date) && (
+                    <span className="block text-sm font-medium text-amber-800">PO numbers in this file won't be saved yet: {PO_NOT_ENABLED}</span>
+                  )}
                 </h3>
                 <Button
                   onClick={importItems}
@@ -445,6 +483,7 @@ Valid columns are: Name, Category, Serial_Number, Description, Barcode, Conditio
                       <TableHead>Category</TableHead>
                       <TableHead className="text-center">Qty</TableHead>
                       <TableHead>Serial #</TableHead>
+                      <TableHead>PO #</TableHead>
                       <TableHead>Condition</TableHead>
                       <TableHead>Image</TableHead>
                     </TableRow>
@@ -464,6 +503,7 @@ Valid columns are: Name, Category, Serial_Number, Description, Barcode, Conditio
                           </Badge>
                         </TableCell>
                         <TableCell className="font-mono text-sm">{item.serial_number || '-'}</TableCell>
+                        <TableCell className="text-sm">{item.po_number || '-'}{item.purchase_date ? ` · ${item.purchase_date}` : ''}</TableCell>
                         <TableCell>
                           <Badge className={
                             item.condition === 'good' ? 'bg-green-100 text-green-800' :
