@@ -7,22 +7,26 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { FormAlert } from '@/components/auth/FormAlert';
 import { Loader2, Mail, UserPlus } from 'lucide-react';
 import { CreateTechResult, createTechnician, describeLinkLifetime } from '@/lib/adminTechApi';
-import { TruckInfo, truckLabel } from '@/lib/inventoryReport';
+import { VanOption, VanSelect } from '@/components/VanSelect';
 
 const SPECIALTIES = ['Electrician', 'Plumber', 'HVAC Technician', 'Carpenter', 'Mechanic', 'Welder', 'General Maintenance', 'Other'];
-const NO_VAN = '__none__';
 
 interface Props {
   open: boolean;
-  trucks: TruckInfo[];
+  /** This company's vans (from the trucks table), with who drives each now. */
+  vans: VanOption[];
+  companyId?: string;
+  userId?: string;
   onClose: () => void;
   /** Called after a technician was created, so the list can reload. */
   onCreated: () => void;
+  /** Called after "+ Create new van" added a van, so the parent's van list includes it. */
+  onVanCreated: (van: VanOption) => void;
 }
 
-const empty = { firstName: '', lastName: '', email: '', phone: '', specialty: '', truckId: NO_VAN, mode: 'invite' as 'invite' | 'no_email' };
+const empty = { firstName: '', lastName: '', email: '', phone: '', specialty: '', truckId: '', mode: 'invite' as 'invite' | 'no_email' };
 
-export const AddTechnicianDialog: React.FC<Props> = ({ open, trucks, onClose, onCreated }) => {
+export const AddTechnicianDialog: React.FC<Props> = ({ open, vans, companyId, userId, onClose, onCreated, onVanCreated }) => {
   const [form, setForm] = useState(empty);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -42,7 +46,7 @@ export const AddTechnicianDialog: React.FC<Props> = ({ open, trucks, onClose, on
     setError(null);
     setSaving(true);
     try {
-      const r = await createTechnician({ ...form, truckId: form.truckId === NO_VAN ? undefined : form.truckId });
+      const r = await createTechnician({ ...form, truckId: form.truckId || undefined });
       setResult(r);
       onCreated();
     } catch (err) {
@@ -109,14 +113,19 @@ export const AddTechnicianDialog: React.FC<Props> = ({ open, trucks, onClose, on
               </div>
             </div>
             <div className="space-y-1.5">
-              <Label>Van to assign (optional)</Label>
-              <Select value={form.truckId} onValueChange={(v) => set('truckId', v)}>
-                <SelectTrigger className={field}><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value={NO_VAN} className="py-3 text-base">No van for now</SelectItem>
-                  {trucks.map((t) => <SelectItem key={t.id} value={t.id} className="py-3 text-base">{truckLabel(t)}</SelectItem>)}
-                </SelectContent>
-              </Select>
+              <Label htmlFor="at-van">Assign to van (optional)</Label>
+              <VanSelect
+                id="at-van"
+                vans={vans}
+                value={form.truckId}
+                onChange={(v) => set('truckId', v)}
+                noneLabel="No van for now"
+                allowCreate
+                companyId={companyId}
+                userId={userId}
+                onVanCreated={onVanCreated}
+              />
+              <p className="text-sm text-gray-700">Each van shows its plate and who drives it now.</p>
             </div>
 
             <fieldset className="space-y-2">

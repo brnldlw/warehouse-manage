@@ -18,6 +18,8 @@ dist-ssr
 .env.*.local
 backups/
 prompts/
+# Supabase CLI's local link info (created by `supabase link`)
+supabase/.temp/
 
 # Editor directories and files
 .vscode/*

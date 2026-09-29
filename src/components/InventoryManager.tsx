@@ -26,10 +26,13 @@ import { SearchBox } from './SearchBox';
 import { BarcodeField } from './labels/BarcodeField';
 import { MergeDuplicatesDialog } from './MergeDuplicatesDialog';
 import { describeConflict, findToolWithBarcode } from '@/lib/toolCodes';
+import { PO_NOT_ENABLED, isMissingPoColumnError, markPoColumnsMissing, usePoSupport } from '@/lib/poSupport';
+import { Checkbox } from '@/components/ui/checkbox';
+import { SetPoDialog } from './SetPoDialog';
 import { PrintPortal } from './print/PrintPortal';
 import { InventoryReportDocument } from './print/InventoryReportDocument';
 import {
-  ALL_COLUMN_KEYS, ReportItem, ReportMeta, WAREHOUSE, downloadCsv, downloadXlsx, exportFileName,
+  ReportItem, ReportMeta, WAREHOUSE, downloadCsv, downloadXlsx, exportColumnKeys, exportFileName,
   formatDateTime, groupRows, summarizeItems,
 } from '@/lib/inventoryReport';
 import {
@@ -77,10 +80,15 @@ export const InventoryManager: React.FC = () => {
     locationType: 'warehouse' as 'warehouse' | 'truck',
     assignedTruckId: '',
     price: 0,
+    poNumber: '',
+    purchaseDate: '',
     quantity: 1,
     image: null as File | null
   });
   const [loading, setLoading] = useState(false);
+  const poSupported = usePoSupport();
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [showSetPo, setShowSetPo] = useState(false);
   const [editingItem, setEditingItem] = useState<InventoryItem | null>(null);
   const [editingGroup, setEditingGroup] = useState<GroupedTool | null>(null);
   const [editForm, setEditForm] = useState({
@@ -92,7 +100,14 @@ export const InventoryManager: React.FC = () => {
     condition: 'good' as 'good' | 'fair' | 'poor' | 'damaged',
     price: 0,
     quantity: 1,
-    image: null as File | null
+    image: null as File | null,
+    poNumber: '',
+    purchaseDate: '',
+    // Group edits: tools may have different POs/dates. Only overwrite what was actually changed.
+    poMixed: false,
+    dateMixed: false,
+    poTouched: false,
+    dateTouched: false,
   });
   const [transferItem, setTransferItem] = useState<InventoryItem | null>(null);
   const [transferGroup, setTransferGroup] = useState<GroupedTool | null>(null);
@@ -197,10 +212,14 @@ export const InventoryManager: React.FC = () => {
         assignedTruckName: item.trucks?.name,
         assignedAt: item.assigned_at ? new Date(item.assigned_at) : undefined,
         assignedBy: item.assigned_by,
-        groupId: item.group_id
+        groupId: item.group_id,
+        // Present only once migration 003 has run (select * returns whatever columns exist)
+        poNumber: item.po_number ?? '',
+        purchaseDate: item.purchase_date ?? ''
       }));
-      
+
       setItems(transformedItems);
+      setSelectedIds(new Set());
     } catch (error) {
       console.error('Error loading inventory items:', error);
       toast({
@@ -286,6 +305,10 @@ export const InventoryManager: React.FC = () => {
 
       const qty = Math.max(1, Math.min(itemForm.quantity, 500)); // Cap at 500
       const groupId = crypto.randomUUID();
+      // Same PO on every tool added together (only once the database has the columns)
+      const poFields = poSupported
+        ? { po_number: itemForm.poNumber.trim() || null, purchase_date: itemForm.purchaseDate || null }
+        : {};
 
       // Build array of items (all share same group_id)
       const itemsToInsert = Array.from({ length: qty }, (_, i) => ({
@@ -304,7 +327,8 @@ export const InventoryManager: React.FC = () => {
         unit_price: itemForm.price,
         location: itemForm.locationType === 'warehouse' ? 'Warehouse' : null,
         company_id: userProfile.company_id,
-        group_id: groupId
+        group_id: groupId,
+        ...poFields
       }));
 
       const { data, error } = await supabase
@@ -315,7 +339,10 @@ export const InventoryManager: React.FC = () => {
           trucks:assigned_truck_id (name, identifier)
         `);
 
-      if (error) throw error;
+      if (error) {
+        if (isMissingPoColumnError(error)) { markPoColumnsMissing(); throw new Error(PO_NOT_ENABLED); }
+        throw error;
+      }
 
       if (!data || data.length === 0) throw new Error('No items returned');
 
@@ -370,9 +397,11 @@ export const InventoryManager: React.FC = () => {
         locationType: item.location_type,
         assignedTruckId: item.assigned_truck_id,
         assignedTruckName: item.trucks?.name,
-        groupId: item.group_id
+        groupId: item.group_id,
+        poNumber: item.po_number ?? '',
+        purchaseDate: item.purchase_date ?? ''
       }));
-      
+
       setItems(prev => [...newItems, ...prev]);
       setItemForm({
         name: '',
@@ -384,6 +413,8 @@ export const InventoryManager: React.FC = () => {
         locationType: 'warehouse',
         assignedTruckId: '',
         price: 0,
+        poNumber: '',
+        purchaseDate: '',
         quantity: 1,
         image: null
       });
@@ -584,6 +615,9 @@ export const InventoryManager: React.FC = () => {
   const startEdit = (item: InventoryItem, group?: GroupedTool) => {
     setEditingItem(item);
     setEditingGroup(group || null);
+    const unitsInEdit = group ? group.items : [item];
+    const pos = [...new Set(unitsInEdit.map((i) => (i.poNumber || '').trim()))];
+    const dates = [...new Set(unitsInEdit.map((i) => i.purchaseDate || ''))];
     setEditForm({
       name: item.name,
       description: item.description || '',
@@ -593,7 +627,13 @@ export const InventoryManager: React.FC = () => {
       condition: item.condition || 'good',
       price: item.price,
       quantity: group ? group.items.length : 1,
-      image: null
+      image: null,
+      poNumber: pos.length === 1 ? pos[0] : '',
+      purchaseDate: dates.length === 1 ? dates[0] : '',
+      poMixed: pos.length > 1,
+      dateMixed: dates.length > 1,
+      poTouched: false,
+      dateTouched: false,
     });
   };
 
@@ -634,7 +674,10 @@ export const InventoryManager: React.FC = () => {
           description: editForm.description || null,
           category_id: editForm.categoryId,
           condition: editForm.condition,
-          unit_price: editForm.price
+          unit_price: editForm.price,
+          // PO/date: only written when changed, so tools with different POs keep their own
+          ...(poSupported && editForm.poTouched ? { po_number: editForm.poNumber.trim() || null } : {}),
+          ...(poSupported && editForm.dateTouched ? { purchase_date: editForm.purchaseDate || null } : {}),
         };
 
         // Update all existing items in the group
@@ -643,7 +686,10 @@ export const InventoryManager: React.FC = () => {
           .from('inventory_items')
           .update(baseData)
           .in('id', groupItemIds);
-        if (updateError) throw updateError;
+        if (updateError) {
+          if (isMissingPoColumnError(updateError)) { markPoColumnsMissing(); throw new Error(PO_NOT_ENABLED); }
+          throw updateError;
+        }
 
         if (unit) {
           const { error: unitError } = await supabase
@@ -680,7 +726,10 @@ export const InventoryManager: React.FC = () => {
             assigned_truck_id: editingGroup.assignedTruckId || null,
             serial_number: null,
             barcode: null,
-            image_url: editingItem.image_url || null
+            image_url: editingItem.image_url || null,
+            // New copies get the group's PO/date when everyone shares one
+            ...(poSupported && (!editForm.poMixed || editForm.poTouched) ? { po_number: editForm.poNumber.trim() || null } : {}),
+            ...(poSupported && (!editForm.dateMixed || editForm.dateTouched) ? { purchase_date: editForm.purchaseDate || null } : {}),
           }));
           const { error: insertError } = await supabase
             .from('inventory_items')
@@ -723,14 +772,18 @@ export const InventoryManager: React.FC = () => {
           barcode: newBarcode || null,
           serial_number: editForm.serialNumber || null,
           condition: editForm.condition,
-          unit_price: editForm.price
+          unit_price: editForm.price,
+          ...(poSupported ? { po_number: editForm.poNumber.trim() || null, purchase_date: editForm.purchaseDate || null } : {}),
         };
 
         const { error } = await supabase
           .from('inventory_items')
           .update(updateData)
           .eq('id', editingItem.id);
-        if (error) throw error;
+        if (error) {
+          if (isMissingPoColumnError(error)) { markPoColumnsMissing(); throw new Error(PO_NOT_ENABLED); }
+          throw error;
+        }
 
         let imageUrl = editingItem.image_url;
         if (editForm.image) {
@@ -746,7 +799,11 @@ export const InventoryManager: React.FC = () => {
 
         setItems(prev => prev.map(item =>
           item.id === editingItem.id
-            ? { ...item, name: editForm.name, description: editForm.description, categoryId: editForm.categoryId, barcode: editForm.barcode, serialNumber: editForm.serialNumber, condition: editForm.condition, price: editForm.price, image_url: imageUrl }
+            ? {
+                ...item, name: editForm.name, description: editForm.description, categoryId: editForm.categoryId, barcode: editForm.barcode,
+                serialNumber: editForm.serialNumber, condition: editForm.condition, price: editForm.price, image_url: imageUrl,
+                ...(poSupported ? { poNumber: editForm.poNumber.trim(), purchaseDate: editForm.purchaseDate } : {}),
+              }
             : item
         ));
         toast({ title: "Success", description: "Tool updated successfully" });
@@ -780,11 +837,24 @@ export const InventoryManager: React.FC = () => {
     return colors[condition] || colors.good;
   };
 
+  const toggleSelected = (ids: string[], on: boolean) => setSelectedIds((prev) => {
+    const next = new Set(prev);
+    ids.forEach((id) => (on ? next.add(id) : next.delete(id)));
+    return next;
+  });
+
+  /** "PO-1042", "PO-1042 +2 more" or "—" for a group row. */
+  const groupPoText = (units: InventoryItem[]) => {
+    const pos = [...new Set(units.map((u) => (u.poNumber || '').trim()).filter(Boolean))];
+    return pos.length === 0 ? '—' : pos.length === 1 ? pos[0] : `${pos[0]} +${pos.length - 1} more`;
+  };
+
   /** One unit inside a group: "#2 · SN 12345 · BC CAP-00012 · Van 3 · Good". */
   const unitLabel = (item: InventoryItem, idx: number) => [
     `#${idx + 1}`,
     item.serialNumber && `SN ${item.serialNumber}`,
     item.barcode && `BC ${item.barcode}`,
+    item.poNumber && `PO ${item.poNumber}`,
     item.locationType === 'warehouse' ? 'Warehouse' : item.assignedTruckName || 'Unknown van',
     (item.condition || 'good').charAt(0).toUpperCase() + (item.condition || 'good').slice(1),
   ].filter(Boolean).join(' · ');
@@ -894,6 +964,7 @@ export const InventoryManager: React.FC = () => {
         item.name,
         item.serialNumber,
         item.barcode,
+        item.poNumber,
         getCategoryName(item.categoryId),
         item.locationType === 'warehouse' ? 'Warehouse' : item.assignedTruckName,
       );
@@ -977,6 +1048,8 @@ export const InventoryManager: React.FC = () => {
       locationName: item.locationType === 'warehouse' ? 'Warehouse' : item.assignedTruckName || 'Unknown Truck',
       unitPrice: Number.isFinite(price) ? price : null,
       groupId: item.groupId ?? null,
+      poNumber: item.poNumber ?? '',
+      purchaseDate: item.purchaseDate ?? '',
     };
   };
 
@@ -1006,8 +1079,8 @@ export const InventoryManager: React.FC = () => {
 
   const exportScreen = (format: 'csv' | 'xlsx') => {
     const name = exportFileName(companyName, 'tools-inventory', format);
-    if (format === 'csv') downloadCsv(name, ALL_COLUMN_KEYS, screenReportGroups(), 'none');
-    else downloadXlsx(name, screenReportMeta(), ALL_COLUMN_KEYS, screenReportGroups(), 'none');
+    if (format === 'csv') downloadCsv(name, exportColumnKeys(poSupported), screenReportGroups(), 'none');
+    else downloadXlsx(name, screenReportMeta(), exportColumnKeys(poSupported), screenReportGroups(), 'none');
   };
 
   const SortIcon = ({ field }: { field: typeof sortField }) => {
@@ -1164,6 +1237,33 @@ export const InventoryManager: React.FC = () => {
                   onChange={(e) => setItemForm(prev => ({ ...prev, price: parseFloat(e.target.value) || 0 }))}
                 />
               </div>
+              {poSupported ? (
+                <>
+                  <div>
+                    <Label htmlFor="po-number">PO Number</Label>
+                    <Input
+                      id="po-number"
+                      value={itemForm.poNumber}
+                      onChange={(e) => setItemForm(prev => ({ ...prev, poNumber: e.target.value }))}
+                      placeholder="e.g. PO-1042"
+                    />
+                    {itemForm.quantity > 1 && itemForm.poNumber.trim() && (
+                      <p className="text-xs text-blue-700 mt-1">All {itemForm.quantity} tools get this PO number</p>
+                    )}
+                  </div>
+                  <div>
+                    <Label htmlFor="purchase-date">Purchase Date</Label>
+                    <Input
+                      id="purchase-date"
+                      type="date"
+                      value={itemForm.purchaseDate}
+                      onChange={(e) => setItemForm(prev => ({ ...prev, purchaseDate: e.target.value }))}
+                    />
+                  </div>
+                </>
+              ) : poSupported === false ? (
+                <p className="text-sm text-amber-800 md:col-span-2 self-end">{PO_NOT_ENABLED}</p>
+              ) : null}
               <div>
                 <Label htmlFor="quantity">Quantity</Label>
                 <Input
@@ -1361,6 +1461,36 @@ export const InventoryManager: React.FC = () => {
                   onChange={(e) => setEditForm(prev => ({ ...prev, price: parseFloat(e.target.value) || 0 }))}
                 />
               </div>
+              {poSupported ? (
+                <>
+                  <div>
+                    <Label htmlFor="edit-po">PO Number</Label>
+                    <Input
+                      id="edit-po"
+                      value={editForm.poNumber}
+                      onChange={(e) => setEditForm(prev => ({ ...prev, poNumber: e.target.value, poTouched: true }))}
+                      placeholder={editForm.poMixed ? 'Several — leave blank to keep each one' : 'e.g. PO-1042'}
+                    />
+                    {editingGroup && editingGroup.items.length > 1 && editForm.poTouched && (
+                      <p className="text-xs text-blue-700 mt-1">Will be set on all {editingGroup.items.length} tools in this group</p>
+                    )}
+                  </div>
+                  <div>
+                    <Label htmlFor="edit-purchase-date">Purchase Date</Label>
+                    <Input
+                      id="edit-purchase-date"
+                      type="date"
+                      value={editForm.purchaseDate}
+                      onChange={(e) => setEditForm(prev => ({ ...prev, purchaseDate: e.target.value, dateTouched: true }))}
+                    />
+                    {editForm.dateMixed && !editForm.dateTouched && (
+                      <p className="text-xs text-gray-700 mt-1">Tools in this group have different dates; leave empty to keep them.</p>
+                    )}
+                  </div>
+                </>
+              ) : poSupported === false ? (
+                <p className="text-sm text-amber-800 md:col-span-2">{PO_NOT_ENABLED}</p>
+              ) : null}
               <div className="md:col-span-2">
                 <Label htmlFor="edit-description">Description</Label>
                 <Input
@@ -1537,7 +1667,7 @@ export const InventoryManager: React.FC = () => {
               className="flex-1"
               value={searchTerm}
               onChange={setSearchTerm}
-              placeholder="Search name, serial, barcode, category or van…"
+              placeholder="Search name, serial, barcode, PO, category or van…"
               shown={filteredItems.length}
               total={items.length}
               noun="tools"
@@ -1561,7 +1691,7 @@ export const InventoryManager: React.FC = () => {
                 <SelectItem value="warehouse">Warehouse Only</SelectItem>
                 {trucks.map((truck) => (
                   <SelectItem key={truck.id} value={truck.id}>
-                    {truck.name}
+                    {truck.name}{truck.identifier ? ` (${truck.identifier})` : ''}
                   </SelectItem>
                 ))}
               </SelectContent>
@@ -1589,12 +1719,32 @@ export const InventoryManager: React.FC = () => {
           <CardTitle className="flex items-center justify-between">
             <span>Tools ({filteredItems.length} items, {groupedTools.length} groups)</span>
           </CardTitle>
+          {selectedIds.size > 0 && (
+            <div className="flex flex-col sm:flex-row sm:items-center gap-3 rounded-md border-2 border-blue-700 bg-blue-50 p-3">
+              <span className="text-base font-semibold">{selectedIds.size} tool{selectedIds.size === 1 ? '' : 's'} selected</span>
+              <div className="flex flex-wrap gap-2">
+                <Button className="h-12 bg-blue-700 hover:bg-blue-800 text-white" onClick={() => setShowSetPo(true)} disabled={!poSupported}>
+                  Set PO number
+                </Button>
+                <Button variant="outline" className="h-12 border-2" onClick={() => setSelectedIds(new Set())}>Clear selection</Button>
+              </div>
+              {poSupported === false && <span className="text-sm text-amber-800">{PO_NOT_ENABLED}</span>}
+            </div>
+          )}
         </CardHeader>
         <CardContent>
-          <div className="border rounded-lg overflow-hidden">
+          <div className="border rounded-lg overflow-x-auto">
             <Table>
               <TableHeader>
                 <TableRow className="bg-gray-50 dark:bg-gray-800">
+                  <TableHead className="w-12">
+                    <Checkbox
+                      className="h-5 w-5"
+                      aria-label="Select all tools shown"
+                      checked={filteredItems.length > 0 && filteredItems.every((i) => selectedIds.has(i.id))}
+                      onCheckedChange={(v) => toggleSelected(filteredItems.map((i) => i.id), v === true)}
+                    />
+                  </TableHead>
                   <TableHead className="w-12"></TableHead>
                   <TableHead 
                     className="cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-700"
@@ -1629,13 +1779,14 @@ export const InventoryManager: React.FC = () => {
                       Location <SortIcon field="location" />
                     </div>
                   </TableHead>
+                  {poSupported && <TableHead>PO #</TableHead>}
                   <TableHead className="text-right">Actions</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {groupedTools.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={7} className="text-center py-8 text-gray-500">
+                    <TableCell colSpan={poSupported ? 9 : 8} className="text-center py-8 text-gray-500">
                       No tools found. Add your first tool above.
                     </TableCell>
                   </TableRow>
@@ -1654,6 +1805,14 @@ export const InventoryManager: React.FC = () => {
                           className={`hover:bg-gray-50 dark:hover:bg-gray-800 ${group.quantity > 1 ? 'cursor-pointer' : ''}`}
                           onClick={() => group.quantity > 1 ? toggleGroupExpanded(groupKey) : undefined}
                         >
+                          <TableCell onClick={(e) => e.stopPropagation()}>
+                            <Checkbox
+                              className="h-5 w-5"
+                              aria-label={`Select ${group.name}`}
+                              checked={group.items.every((i) => selectedIds.has(i.id))}
+                              onCheckedChange={(v) => toggleSelected(group.items.map((i) => i.id), v === true)}
+                            />
+                          </TableCell>
                           <TableCell>
                             <div className="w-10 h-10 bg-gray-100 dark:bg-gray-700 rounded-lg flex items-center justify-center overflow-hidden">
                               {group.image_url ? (
@@ -1700,6 +1859,7 @@ export const InventoryManager: React.FC = () => {
                               <span className="text-sm">{locationText}</span>
                             </div>
                           </TableCell>
+                          {poSupported && <TableCell className="text-sm">{groupPoText(group.items)}</TableCell>}
                           <TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
                             <DropdownMenu>
                               <DropdownMenuTrigger asChild>
@@ -1760,6 +1920,14 @@ export const InventoryManager: React.FC = () => {
                         {isExpanded && group.quantity > 1 && group.items.map((item, idx) => (
                           <TableRow key={item.id} className="bg-gray-50/50 dark:bg-gray-900/50">
                             <TableCell>
+                              <Checkbox
+                                className="h-5 w-5"
+                                aria-label={`Select ${item.name} #${idx + 1}`}
+                                checked={selectedIds.has(item.id)}
+                                onCheckedChange={(v) => toggleSelected([item.id], v === true)}
+                              />
+                            </TableCell>
+                            <TableCell>
                               <div className="w-6 h-6 ml-2 rounded bg-gray-200 dark:bg-gray-700 flex items-center justify-center text-xs text-gray-500">
                                 {idx + 1}
                               </div>
@@ -1775,6 +1943,7 @@ export const InventoryManager: React.FC = () => {
                               </Badge>
                             </TableCell>
                             <TableCell></TableCell>
+                            {poSupported && <TableCell className="text-sm">{item.poNumber || '—'}</TableCell>}
                             <TableCell className="text-right">
                               <DropdownMenu>
                                 <DropdownMenuTrigger asChild>
@@ -1815,6 +1984,14 @@ export const InventoryManager: React.FC = () => {
       </Card>
         </>
       )}
+      <SetPoDialog
+        open={showSetPo}
+        onClose={() => setShowSetPo(false)}
+        tools={items.filter((i) => selectedIds.has(i.id))}
+        companyId={userProfile?.company_id}
+        userId={userProfile?.id}
+        onSaved={async () => { setShowSetPo(false); await loadItems(); }}
+      />
       {isAdmin && (
         <MergeDuplicatesDialog
           open={showMerge}
@@ -1834,7 +2011,7 @@ export const InventoryManager: React.FC = () => {
             runningHeader={`${meta.companyName} — ${meta.title}`}
             runningHeaderRight={`Printed ${formatDateTime(meta.printedAt)}`}
           >
-            <InventoryReportDocument meta={meta} columns={ALL_COLUMN_KEYS} groups={screenReportGroups()} />
+            <InventoryReportDocument meta={meta} columns={exportColumnKeys(poSupported)} groups={screenReportGroups()} />
           </PrintPortal>
         );
       })()}

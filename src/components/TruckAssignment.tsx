@@ -34,7 +34,9 @@ export const TruckAssignmentManager: React.FC = () => {
         dbOperations.getUserTruckAssignments()
       ]);
 
-      setTrucks(trucks || []);
+      setTrucks([...(trucks || [])].sort((a, b) =>
+        a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' })
+        || (a.identifier ?? '').localeCompare(b.identifier ?? '', undefined, { numeric: true })));
       setUsers(users || []);
       setAssignments(assignments || []);
     } catch (error) {

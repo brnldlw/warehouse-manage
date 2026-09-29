@@ -511,9 +511,12 @@ export const TechManagement: React.FC = () => {
       )}
       <AddTechnicianDialog
         open={showAdd}
-        trucks={trucks}
+        vans={trucks.map((t) => ({ ...t, techs: techs.filter((x) => x.truck_id === t.id).map(techName) }))}
+        companyId={userProfile?.company_id}
+        userId={userProfile?.id}
         onClose={() => setShowAdd(false)}
         onCreated={() => { fetchTechs(); fetchSignInStatus(); }}
+        onVanCreated={(van) => setTrucks((prev) => [...prev, van])}
       />
 
       {/* Recent Activities */}
