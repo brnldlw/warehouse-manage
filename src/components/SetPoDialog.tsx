@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -49,7 +49,7 @@ export const SetPoDialog: React.FC<Props> = ({ open, onClose, tools, companyId, 
 
   return (
     <Dialog open={open} onOpenChange={(o) => { if (!o && !saving) onClose(); }}>
-      <DialogContent className="max-w-md w-[calc(100vw-1rem)]">
+      <DialogContent className="max-w-md">
         <DialogHeader>
           <DialogTitle className="text-xl">Set PO number</DialogTitle>
           <DialogDescription className="text-base text-gray-700">
@@ -73,12 +73,12 @@ export const SetPoDialog: React.FC<Props> = ({ open, onClose, tools, companyId, 
             </p>
           )}
           <FormAlert error={error} />
-          <div className="flex flex-col sm:flex-row gap-3">
-            <Button className="h-14 flex-1 text-base font-semibold bg-blue-700 hover:bg-blue-800 text-white" onClick={save} disabled={saving}>
+          <DialogFooter>
+            <Button variant="outline" className="h-14 text-base border-2 border-gray-800" onClick={onClose} disabled={saving}>Cancel</Button>
+            <Button className="h-14 text-base font-semibold bg-blue-700 hover:bg-blue-800 text-white" onClick={save} disabled={saving}>
               {saving && <Loader2 className="h-5 w-5 mr-2 animate-spin" />} Save on {tools.length} tool{tools.length === 1 ? '' : 's'}
             </Button>
-            <Button variant="outline" className="h-14 text-base border-2 border-gray-800" onClick={onClose} disabled={saving}>Cancel</Button>
-          </div>
+          </DialogFooter>
         </div>
       </DialogContent>
     </Dialog>

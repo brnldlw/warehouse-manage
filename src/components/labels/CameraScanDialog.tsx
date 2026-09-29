@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { BarcodeFormat, BrowserMultiFormatReader, DecodeHintType, NotFoundException } from '@zxing/library';
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 
 const FORMATS = [
@@ -54,7 +54,7 @@ export const CameraScanDialog: React.FC<{ open: boolean; onClose: () => void; on
 
   return (
     <Dialog open={open} onOpenChange={(o) => { if (!o) onClose(); }}>
-      <DialogContent className="max-w-md w-[calc(100vw-1rem)]">
+      <DialogContent className="max-w-md">
         <DialogHeader>
           <DialogTitle>Scan a code</DialogTitle>
           <DialogDescription className="text-base text-gray-700">Point the camera at the QR code or barcode.</DialogDescription>
@@ -62,11 +62,13 @@ export const CameraScanDialog: React.FC<{ open: boolean; onClose: () => void; on
         {error ? (
           <p role="alert" className="rounded-md border-2 border-red-700 bg-red-50 p-3 text-base text-red-900">{error}</p>
         ) : (
-          <div className="aspect-square overflow-hidden rounded-lg bg-black">
+          <div className="mx-auto aspect-square w-full max-w-[55vh] overflow-hidden rounded-lg bg-black">
             <video ref={videoRef} className="h-full w-full object-cover" autoPlay playsInline muted />
           </div>
         )}
-        <Button variant="outline" className="h-14 text-base border-2 border-gray-800" onClick={onClose}>Cancel</Button>
+        <DialogFooter>
+          <Button variant="outline" className="h-14 text-base border-2 border-gray-800" onClick={onClose}>Cancel</Button>
+        </DialogFooter>
       </DialogContent>
     </Dialog>
   );

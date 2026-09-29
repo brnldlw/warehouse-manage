@@ -28,33 +28,50 @@ AlertDialogOverlay.displayName = AlertDialogPrimitive.Overlay.displayName
 const AlertDialogContent = React.forwardRef<
   React.ElementRef<typeof AlertDialogPrimitive.Content>,
   React.ComponentPropsWithoutRef<typeof AlertDialogPrimitive.Content>
->(({ className, ...props }, ref) => (
-  <AlertDialogPortal>
-    <AlertDialogOverlay />
-    <AlertDialogPrimitive.Content
-      ref={ref}
+>(({ className, children, ...props }, ref) => {
+  // Same fit-the-screen layout as DialogContent (see dialog.tsx): header lifted above the
+  // scrolling area, footer sticky at the bottom.
+  const all = React.Children.toArray(children)
+  const isHeader = (c: React.ReactNode) => React.isValidElement(c) && c.type === AlertDialogHeader
+  const headers = all.filter(isHeader)
+  const body = all.filter((c) => !isHeader(c))
+  return (
+    <AlertDialogPortal>
+      <AlertDialogOverlay />
+      <AlertDialogPrimitive.Content
+        ref={ref}
+        className={cn(
+          "dialog-shell fixed left-[50%] top-[50%] z-50 flex w-[calc(100vw-1rem)] max-w-lg translate-x-[-50%] translate-y-[-50%] flex-col overflow-hidden overflow-clip rounded-lg border bg-card p-0 shadow-lg duration-200 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[state=closed]:slide-out-to-left-1/2 data-[state=closed]:slide-out-to-top-[48%] data-[state=open]:slide-in-from-left-1/2 data-[state=open]:slide-in-from-top-[48%]",
+          className
+        )}
+        {...props}
+      >
+        {headers.length > 0 && (
+          <div className="dialog-fixed-header shrink-0 border-b bg-card px-4 pb-3 pt-4 sm:px-6 sm:pt-6">{headers}</div>
+        )}
+        <div className="dialog-body relative grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)] content-start gap-4 overflow-y-auto overscroll-contain px-4 pt-4 sm:px-6">
+          {body}
+        </div>
+      </AlertDialogPrimitive.Content>
+    </AlertDialogPortal>
+  )
+})
+AlertDialogContent.displayName = AlertDialogPrimitive.Content.displayName
+
+function AlertDialogHeader({
+  className,
+  ...props
+}: React.HTMLAttributes<HTMLDivElement>) {
+  return (
+    <div
       className={cn(
-        "fixed left-[50%] top-[50%] z-50 grid w-full max-w-lg translate-x-[-50%] translate-y-[-50%] gap-4 border bg-card p-6 shadow-lg duration-200 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[state=closed]:slide-out-to-left-1/2 data-[state=closed]:slide-out-to-top-[48%] data-[state=open]:slide-in-from-left-1/2 data-[state=open]:slide-in-from-top-[48%] sm:rounded-lg",
+        "flex flex-col space-y-2 text-left",
         className
       )}
       {...props}
     />
-  </AlertDialogPortal>
-))
-AlertDialogContent.displayName = AlertDialogPrimitive.Content.displayName
-
-const AlertDialogHeader = ({
-  className,
-  ...props
-}: React.HTMLAttributes<HTMLDivElement>) => (
-  <div
-    className={cn(
-      "flex flex-col space-y-2 text-center sm:text-left",
-      className
-    )}
-    {...props}
-  />
-)
+  )
+}
 AlertDialogHeader.displayName = "AlertDialogHeader"
 
 const AlertDialogFooter = ({
@@ -63,7 +80,7 @@ const AlertDialogFooter = ({
 }: React.HTMLAttributes<HTMLDivElement>) => (
   <div
     className={cn(
-      "flex flex-col-reverse sm:flex-row sm:justify-end sm:space-x-2 mt-4",
+      "dialog-sticky-footer sticky bottom-0 z-10 -mx-4 mt-2 flex flex-col-reverse gap-2 border-t bg-card px-4 py-3 sm:-mx-6 sm:flex-row sm:justify-end sm:px-6 sm:py-4",
       className
     )}
     {...props}
@@ -116,7 +133,6 @@ const AlertDialogCancel = React.forwardRef<
     ref={ref}
     className={cn(
       buttonVariants({ variant: "outline" }),
-      "mt-2 sm:mt-0",
       className
     )}
     {...props}

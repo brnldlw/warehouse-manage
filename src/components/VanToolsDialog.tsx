@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { FileSpreadsheet, FileText, Image as ImageIcon, Loader2, Printer, Truck } from 'lucide-react';
@@ -81,7 +81,7 @@ export const VanToolsDialog: React.FC<VanToolsDialogProps> = ({ truck, techNames
 
   return (
     <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}>
-      <DialogContent className="max-w-5xl w-[calc(100vw-1rem)] max-h-[92vh] overflow-y-auto">
+      <DialogContent className="max-w-5xl">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2 text-xl">
             <Truck className="h-5 w-5" /> {heading ?? label}
@@ -103,21 +103,7 @@ export const VanToolsDialog: React.FC<VanToolsDialogProps> = ({ truck, techNames
               <span>Total value <strong>{formatMoney(toolValue(allRows))}</strong></span>
             </div>
 
-            <div className="flex flex-col sm:flex-row flex-wrap gap-3">
-              <Button className={`${bigButton} bg-blue-700 hover:bg-blue-800 text-white`} onClick={print} disabled={!items.length}>
-                <Printer className="h-5 w-5 mr-2" /> Print checklist
-              </Button>
-              <Button variant="outline" className={`${bigButton} border-2 border-gray-800`} disabled={!items.length}
-                onClick={() => downloadCsv(exportFileName(companyName, fileBase, 'csv'), EXPORT_COLUMNS, allGroups, 'none')}>
-                <FileText className="h-5 w-5 mr-2" /> Download CSV
-              </Button>
-              <Button variant="outline" className={`${bigButton} border-2 border-gray-800`} disabled={!items.length}
-                onClick={() => downloadXlsx(exportFileName(companyName, fileBase, 'xlsx'),
-                  { ...meta, title: `Tools on ${label}`, printedAt: new Date() }, EXPORT_COLUMNS, allGroups, 'none')}>
-                <FileSpreadsheet className="h-5 w-5 mr-2" /> Download Excel
-              </Button>
-            </div>
-            <p className="text-sm text-gray-700">Print and downloads always include every tool on the van, even when you are searching.</p>
+            <p className="text-sm text-gray-700">Print and downloads (buttons at the bottom) always include every tool on the van, even when you are searching.</p>
 
             <div className="flex flex-col md:flex-row md:items-start gap-3">
               <SearchBox
@@ -191,6 +177,21 @@ export const VanToolsDialog: React.FC<VanToolsDialogProps> = ({ truck, techNames
                 </Table>
               </div>
             )}
+
+            <DialogFooter className="grid grid-cols-3 sm:flex">
+              <Button variant="outline" className={`${bigButton} border-2 border-gray-800 px-2 sm:px-5`} disabled={!items.length}
+                onClick={() => downloadCsv(exportFileName(companyName, fileBase, 'csv'), EXPORT_COLUMNS, allGroups, 'none')}>
+                <FileText className="h-5 w-5 sm:mr-2" /> <span className="sm:hidden">CSV</span><span className="hidden sm:inline">Download CSV</span>
+              </Button>
+              <Button variant="outline" className={`${bigButton} border-2 border-gray-800 px-2 sm:px-5`} disabled={!items.length}
+                onClick={() => downloadXlsx(exportFileName(companyName, fileBase, 'xlsx'),
+                  { ...meta, title: `Tools on ${label}`, printedAt: new Date() }, EXPORT_COLUMNS, allGroups, 'none')}>
+                <FileSpreadsheet className="h-5 w-5 sm:mr-2" /> <span className="sm:hidden">Excel</span><span className="hidden sm:inline">Download Excel</span>
+              </Button>
+              <Button className={`${bigButton} bg-blue-700 hover:bg-blue-800 text-white px-2 sm:px-5`} onClick={print} disabled={!items.length}>
+                <Printer className="h-5 w-5 sm:mr-2" /> <span className="sm:hidden">Print</span><span className="hidden sm:inline">Print checklist</span>
+              </Button>
+            </DialogFooter>
           </div>
         )}
 

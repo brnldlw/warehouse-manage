@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Input } from '@/components/ui/input';
@@ -143,7 +143,7 @@ export const MergeDuplicatesDialog: React.FC<Props> = ({ open, onClose, tools, c
 
   return (
     <Dialog open={open} onOpenChange={(o) => { if (!o && !busy) onClose(); }}>
-      <DialogContent className="max-w-3xl w-[calc(100vw-1rem)] max-h-[92vh] overflow-y-auto">
+      <DialogContent className="max-w-3xl">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2 text-xl"><Merge className="h-5 w-5" /> Merge duplicates</DialogTitle>
           <DialogDescription className="text-base text-gray-700">
@@ -179,7 +179,7 @@ export const MergeDuplicatesDialog: React.FC<Props> = ({ open, onClose, tools, c
               suggestions.length === 0 ? (
                 <p className="text-base text-gray-700">No likely duplicates found (same name ignoring capitals and spaces, same category). Use "Pick by hand" for others.</p>
               ) : (
-                <div className="space-y-3 max-h-[50vh] overflow-y-auto">
+                <div className="space-y-3">
                   {suggestions.map((set) => {
                     const ids = set.map((g) => g.groupId);
                     const all = ids.every((id) => selected.has(id));
@@ -198,18 +198,18 @@ export const MergeDuplicatesDialog: React.FC<Props> = ({ open, onClose, tools, c
             ) : (
               <div className="space-y-2">
                 <SearchBox value={search} onChange={setSearch} placeholder="Search groups by name or category…" shown={allShown.length} total={groups.length} noun="groups" />
-                <div className="max-h-[45vh] overflow-y-auto rounded-md border divide-y">
+                <div className="rounded-md border divide-y">
                   {allShown.map((g) => <GroupRow key={g.groupId} g={g} />)}
                 </div>
               </div>
             )}
 
-            <div className="sticky bottom-0 flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-t bg-white pt-3">
+            <DialogFooter className="sm:items-center sm:justify-between">
               <span className="text-base">{picked.length} groups, {pickedTools} tools selected</span>
               <Button className="h-14 px-6 text-base font-semibold bg-blue-700 hover:bg-blue-800 text-white" onClick={goPreview} disabled={picked.length < 2}>
                 Preview merge
               </Button>
-            </div>
+            </DialogFooter>
           </div>
         ) : (
           <div className="space-y-5">
@@ -254,13 +254,13 @@ export const MergeDuplicatesDialog: React.FC<Props> = ({ open, onClose, tools, c
               Tools stay where they are; you'll see one line per location on Manage Parts.
             </p>
 
-            <div className="flex flex-col sm:flex-row gap-3">
+            <DialogFooter>
+              <Button variant="outline" className="h-14 text-base border-2 border-gray-800" onClick={() => setStep('pick')} disabled={busy}>Back</Button>
               <Button className="h-14 px-6 text-base font-semibold bg-blue-700 hover:bg-blue-800 text-white" onClick={doMerge} disabled={busy}>
                 {busy ? <Loader2 className="h-5 w-5 mr-2 animate-spin" /> : <Merge className="h-5 w-5 mr-2" />}
                 Merge {picked.length} groups ({pickedTools} tools)
               </Button>
-              <Button variant="outline" className="h-14 text-base border-2 border-gray-800" onClick={() => setStep('pick')} disabled={busy}>Back</Button>
-            </div>
+            </DialogFooter>
           </div>
         )}
       </DialogContent>
