@@ -29,6 +29,8 @@ import { describeConflict, findToolWithBarcode } from '@/lib/toolCodes';
 import { PO_NOT_ENABLED, isMissingPoColumnError, markPoColumnsMissing, usePoSupport } from '@/lib/poSupport';
 import { Checkbox } from '@/components/ui/checkbox';
 import { SetPoDialog } from './SetPoDialog';
+import { BulkMoveControls, BulkTool } from './moves/BulkMoveControls';
+import { loadVans } from '@/lib/vans';
 import { PrintPortal } from './print/PrintPortal';
 import { InventoryReportDocument } from './print/InventoryReportDocument';
 import {
@@ -130,6 +132,19 @@ export const InventoryManager: React.FC = () => {
   useEffect(() => {
     loadPageData();
   }, []);
+
+  // A new van filter starts a fresh selection, so "Return X tools from Van 3" only ever
+  // means tools on Van 3.
+  useEffect(() => { setSelectedIds(new Set()); }, [filterTruck]);
+
+  // Driver names for "Return X tools from Van 3 (Sam Smith)".
+  const [vanTechs, setVanTechs] = useState<Record<string, string[]>>({});
+  useEffect(() => {
+    if (filterTruck === 'all' || filterTruck === 'warehouse' || !userProfile?.company_id) return;
+    loadVans(userProfile.company_id)
+      .then((vans) => setVanTechs(Object.fromEntries(vans.map((v) => [v.id, v.techs]))))
+      .catch(() => undefined);
+  }, [filterTruck, userProfile?.company_id]);
 
   const loadPageData = async () => {
     setPageLoading(true);
@@ -842,6 +857,13 @@ export const InventoryManager: React.FC = () => {
     ids.forEach((id) => (on ? next.add(id) : next.delete(id)));
     return next;
   });
+
+  // Filtered to one van: the selection bar gets Return to warehouse / Move to another van.
+  const vanFilter = filterTruck !== 'all' && filterTruck !== 'warehouse' ? trucks.find((t) => t.id === filterTruck) : undefined;
+  const vanSelected: BulkTool[] = vanFilter
+    ? items.filter((i) => selectedIds.has(i.id) && i.locationType === 'truck' && i.assignedTruckId === vanFilter.id)
+      .map((i) => ({ id: i.id, name: i.name, serial: i.serialNumber || '', barcode: i.barcode || '', condition: i.condition || 'good' }))
+    : [];
 
   /** "PO-1042", "PO-1042 +2 more" or "—" for a group row. */
   const groupPoText = (units: InventoryItem[]) => {
@@ -1719,7 +1741,24 @@ export const InventoryManager: React.FC = () => {
           <CardTitle className="flex items-center justify-between">
             <span>Tools ({filteredItems.length} items, {groupedTools.length} groups)</span>
           </CardTitle>
-          {selectedIds.size > 0 && (
+          {vanFilter && (
+            <div className="space-y-3">
+              <BulkMoveControls
+                companyId={userProfile?.company_id}
+                userId={userProfile?.id}
+                selected={vanSelected}
+                fromTruckId={vanFilter.id}
+                fromLabel={vanTechs[vanFilter.id]?.length ? `${vanFilter.name} (${vanTechs[vanFilter.id].join(', ')})` : vanFilter.name}
+                onSelectionChange={(ids) => setSelectedIds(new Set(ids))}
+                onChanged={loadItems}
+              >
+                <Button variant="outline" className="h-14 border-2" onClick={() => setShowSetPo(true)} disabled={!poSupported}>
+                  Set PO number
+                </Button>
+              </BulkMoveControls>
+            </div>
+          )}
+          {!vanFilter && selectedIds.size > 0 && (
             <div className="flex flex-col sm:flex-row sm:items-center gap-3 rounded-md border-2 border-blue-700 bg-blue-50 p-3">
               <span className="text-base font-semibold">{selectedIds.size} tool{selectedIds.size === 1 ? '' : 's'} selected</span>
               <div className="flex flex-wrap gap-2">

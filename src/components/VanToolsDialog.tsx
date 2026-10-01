@@ -2,7 +2,10 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { FileSpreadsheet, FileText, Image as ImageIcon, Loader2, Printer, Truck } from 'lucide-react';
+import { ChevronDown, ChevronUp, FileSpreadsheet, FileText, Image as ImageIcon, Loader2, Printer, Truck } from 'lucide-react';
+import { BulkMoveControls, BulkTool } from '@/components/moves/BulkMoveControls';
+import { SelectBox } from '@/components/moves/SelectBox';
+import { triState } from '@/lib/selection';
 import { useAuth } from '@/contexts/AuthContext';
 import { useToast } from '@/hooks/use-toast';
 import { usePrint } from '@/hooks/use-print';
@@ -12,7 +15,7 @@ import { VanToolSheets } from '@/components/print/VanToolSheets';
 import { matchesSearch } from '@/lib/search';
 import { usePoSupport } from '@/lib/poSupport';
 import {
-  Detail, ReportItem, exportColumnKeys, ReportMeta, TruckInfo, buildRows, cellText, downloadCsv, downloadXlsx,
+  Detail, ReportItem, conditionLabel, exportColumnKeys, ReportMeta, TruckInfo, buildRows, cellText, downloadCsv, downloadXlsx,
   exportFileName, formatDateTime, formatMoney, groupRows, loadCompanyName, loadVanItems, sortRows, truckLabel,
 } from '@/lib/inventoryReport';
 
@@ -24,10 +27,12 @@ interface VanToolsDialogProps {
   /** Optional heading, e.g. "Sam Smith's van". */
   heading?: string;
   onClose: () => void;
+  /** Called after tools were returned or moved, e.g. to refresh tool counts. */
+  onToolsChanged?: () => void;
 }
 
-/** Just the tools on one van: search, totals, printable checklist, CSV/Excel. */
-export const VanToolsDialog: React.FC<VanToolsDialogProps> = ({ truck, techNames = [], heading, onClose }) => {
+/** Just the tools on one van: search, totals, select & return/move, printable checklist, CSV/Excel. */
+export const VanToolsDialog: React.FC<VanToolsDialogProps> = ({ truck, techNames = [], heading, onClose, onToolsChanged }) => {
   const { userProfile } = useAuth();
   const { toast } = useToast();
   const { printing, print } = usePrint();
@@ -39,9 +44,22 @@ export const VanToolsDialog: React.FC<VanToolsDialogProps> = ({ truck, techNames
   const [loading, setLoading] = useState(false);
   const [search, setSearch] = useState('');
   const [detail, setDetail] = useState<Detail>('summary');
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
 
   const companyId = userProfile?.company_id;
   const truckId = truck?.id;
+
+  const reload = async () => {
+    if (!truck || !companyId) return;
+    try {
+      setItems(await loadVanItems(companyId, truck));
+    } catch (err) {
+      console.error('Error reloading van tools:', err);
+      toast({ title: 'Error', description: "Couldn't refresh this van's tools. Close and reopen to see the latest.", variant: 'destructive' });
+    }
+    onToolsChanged?.();
+  };
 
   useEffect(() => {
     if (!truck || !companyId) return;
@@ -49,6 +67,8 @@ export const VanToolsDialog: React.FC<VanToolsDialogProps> = ({ truck, techNames
     setLoading(true);
     setSearch('');
     setItems([]);
+    setSelected(new Set());
+    setExpanded(new Set());
     Promise.all([loadVanItems(companyId, truck), loadCompanyName(companyId)])
       .then(([vanItems, name]) => { if (!cancelled) { setItems(vanItems); setCompanyName(name); } })
       .catch((err) => {
@@ -67,10 +87,27 @@ export const VanToolsDialog: React.FC<VanToolsDialogProps> = ({ truck, techNames
   );
   const toolCount = (rows: typeof allRows) => rows.reduce((n, r) => n + r.quantity, 0);
   const toolValue = (rows: typeof allRows) => rows.reduce((n, r) => n + (r.totalValue ?? 0), 0);
+  const itemById = useMemo(() => new Map(items.map((i) => [i.id, i])), [items]);
+  const shownIds = useMemo(() => shownRows.flatMap((r) => r.itemIds), [shownRows]);
+
+  const setSome = (ids: string[], on: boolean) => setSelected((prev) => {
+    const next = new Set(prev);
+    ids.forEach((id) => (on ? next.add(id) : next.delete(id)));
+    return next;
+  });
+  const toggleExpanded = (key: string) => setExpanded((prev) => {
+    const next = new Set(prev);
+    if (next.has(key)) next.delete(key); else next.add(key);
+    return next;
+  });
+  const selectedTools: BulkTool[] = items.filter((i) => selected.has(i.id))
+    .map((i) => ({ id: i.id, name: i.name, serial: i.serial, barcode: i.barcode, condition: i.condition }));
 
   if (!truck) return null;
 
   const label = truckLabel(truck);
+  const fromLabel = techNames.length ? `${truck.name} (${techNames.join(', ')})` : truck.name;
+  const colCount = (poSupported ? 10 : 9) + 1;
   const printedBy = [userProfile?.first_name, userProfile?.last_name].filter(Boolean).join(' ') || userProfile?.email || '';
   const meta: ReportMeta = { companyName, title: 'Van Tool Sheet', filtersText: '', printedBy, printedAt: new Date() };
   const fileBase = `van-${truck.name}`;
@@ -125,6 +162,18 @@ export const VanToolsDialog: React.FC<VanToolsDialogProps> = ({ truck, techNames
               </div>
             </div>
 
+            <div className="sticky top-0 z-10 space-y-3 bg-background empty:hidden">
+              <BulkMoveControls
+                companyId={companyId}
+                userId={userProfile?.id}
+                selected={selectedTools}
+                fromTruckId={truck.id}
+                fromLabel={fromLabel}
+                onSelectionChange={(ids) => setSelected(new Set(ids))}
+                onChanged={reload}
+              />
+            </div>
+
             {items.length === 0 ? (
               <p className="py-10 text-center text-base text-gray-700">No tools are on this van.</p>
             ) : (
@@ -132,6 +181,10 @@ export const VanToolsDialog: React.FC<VanToolsDialogProps> = ({ truck, techNames
                 <Table>
                   <TableHeader>
                     <TableRow>
+                      <TableHead className="w-12 px-0">
+                        <SelectBox label="Select all tools shown" checked={shownIds.length ? triState(shownIds, selected) : false}
+                          disabled={!shownIds.length} onChange={(on) => setSome(shownIds, on)} />
+                      </TableHead>
                       <TableHead className="w-14">Photo</TableHead>
                       <TableHead>Name</TableHead>
                       <TableHead>Category</TableHead>
@@ -146,15 +199,31 @@ export const VanToolsDialog: React.FC<VanToolsDialogProps> = ({ truck, techNames
                   </TableHeader>
                   <TableBody>
                     {shownRows.length === 0 ? (
-                      <TableRow><TableCell colSpan={poSupported ? 10 : 9} className="py-8 text-center text-gray-700">No tools match your search.</TableCell></TableRow>
-                    ) : shownRows.map((r) => (
-                      <TableRow key={r.key}>
+                      <TableRow><TableCell colSpan={colCount} className="py-8 text-center text-gray-700">No tools match your search.</TableCell></TableRow>
+                    ) : shownRows.map((r) => {
+                      const isOpen = expanded.has(r.key) && r.itemIds.length > 1;
+                      return (
+                      <React.Fragment key={r.key}>
+                      <TableRow data-state={triState(r.itemIds, selected) === true ? 'selected' : undefined}>
+                        <TableCell className="px-0">
+                          <SelectBox label={`Select ${r.name}${r.itemIds.length > 1 ? ` (all ${r.itemIds.length})` : ''}`}
+                            checked={triState(r.itemIds, selected)} onChange={(on) => setSome(r.itemIds, on)} />
+                        </TableCell>
                         <TableCell>
                           <div className="h-10 w-10 rounded bg-gray-100 flex items-center justify-center overflow-hidden">
                             {r.imageUrl ? <img src={r.imageUrl} alt="" className="h-full w-full object-cover" /> : <ImageIcon className="h-5 w-5 text-gray-400" />}
                           </div>
                         </TableCell>
-                        <TableCell className="font-medium">{r.name}</TableCell>
+                        <TableCell className="font-medium">
+                          {r.itemIds.length > 1 ? (
+                            <button type="button" onClick={() => toggleExpanded(r.key)} aria-expanded={isOpen}
+                              className="flex min-h-[44px] items-center gap-1 text-left font-medium">
+                              {isOpen ? <ChevronUp className="h-4 w-4 shrink-0" /> : <ChevronDown className="h-4 w-4 shrink-0" />}
+                              {r.name}
+                              <span className="ml-1 whitespace-nowrap text-sm font-normal text-blue-800 underline">{isOpen ? 'hide units' : 'show units'}</span>
+                            </button>
+                          ) : r.name}
+                        </TableCell>
                         <TableCell>{r.category}</TableCell>
                         <TableCell className="font-mono text-sm">{r.serial}</TableCell>
                         <TableCell className="font-mono text-sm">{r.barcode}</TableCell>
@@ -164,10 +233,33 @@ export const VanToolsDialog: React.FC<VanToolsDialogProps> = ({ truck, techNames
                         <TableCell className="text-right whitespace-nowrap">{cellText(r, 'unitValue')}</TableCell>
                         <TableCell className="text-right whitespace-nowrap">{cellText(r, 'totalValue')}</TableCell>
                       </TableRow>
-                    ))}
+                      {isOpen && r.itemIds.map((id, idx) => {
+                        const u = itemById.get(id);
+                        if (!u) return null;
+                        return (
+                          <TableRow key={id} className="bg-gray-50" data-state={selected.has(id) ? 'selected' : undefined}>
+                            <TableCell className="px-0 pl-4">
+                              <SelectBox label={`Select ${u.name} #${idx + 1}`} checked={selected.has(id)} onChange={(on) => setSome([id], on)} />
+                            </TableCell>
+                            <TableCell className="text-sm text-gray-600 text-center">#{idx + 1}</TableCell>
+                            <TableCell className="pl-8 text-sm">{u.name}</TableCell>
+                            <TableCell />
+                            <TableCell className="font-mono text-sm">{u.serial}</TableCell>
+                            <TableCell className="font-mono text-sm">{u.barcode}</TableCell>
+                            {poSupported && <TableCell className="text-sm">{u.poNumber}</TableCell>}
+                            <TableCell className="text-sm">{conditionLabel(u.condition)}</TableCell>
+                            <TableCell className="text-right">1</TableCell>
+                            <TableCell className="text-right whitespace-nowrap">{u.unitPrice != null ? formatMoney(u.unitPrice) : ''}</TableCell>
+                            <TableCell />
+                          </TableRow>
+                        );
+                      })}
+                      </React.Fragment>
+                      );
+                    })}
                     {shownRows.length > 0 && (
                       <TableRow className="font-bold border-t-2 border-gray-800">
-                        <TableCell colSpan={poSupported ? 7 : 6}>{search ? 'Total (search results)' : 'Total'}</TableCell>
+                        <TableCell colSpan={poSupported ? 8 : 7}>{search ? 'Total (search results)' : 'Total'}</TableCell>
                         <TableCell className="text-right">{toolCount(shownRows)}</TableCell>
                         <TableCell />
                         <TableCell className="text-right whitespace-nowrap">{formatMoney(toolValue(shownRows))}</TableCell>

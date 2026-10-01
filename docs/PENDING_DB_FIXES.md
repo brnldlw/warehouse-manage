@@ -103,6 +103,24 @@ older screens (Reports activity list, Technicians "Recent activities") only read
 the database — and have the screens read it; stop the app-side `transferred` insert in the same
 release. No change needed until then.
 
+## 5. Bulk return/move isn't one all-or-nothing database step — BY DESIGN for now
+
+**Why:** CLAUDE.md wants every tool movement to go through a database function that does it
+atomically and checks role server-side. Bulk "Return to warehouse / Move to another van"
+(Caplinger fixes 6) was built without schema changes, the same way as the existing single-tool
+Transfer: the browser updates `inventory_items` in batches of 50 and writes one `transferred`
+history row per tool (plus a `batch_id`, used by Undo).
+*App-side mitigation:* every tool is reported as moved, skipped or failed (by name, with the
+reason); failed ones stay selected to retry; nothing fails silently. RLS still limits it to the
+user's own company. Undo puts exactly those tools back.
+**What's not covered:** if the browser is closed mid-batch, earlier batches stay moved (each tool
+is either moved or not — never half-moved — and its history row is written right after); and any
+signed-in user whose RLS allows updating tools can move them (no role check).
+
+**Proposed fix (with the custody rebuild):** a `move_tools(p_item_ids uuid[], p_to_truck uuid,
+p_condition text, p_note text)` function (`security definer`, checks company + role, writes
+`tool_events`), and point `src/lib/toolMoves.ts` at it. The screens don't change.
+
 ---
 
 ## Checks (read-only, to run in Supabase → SQL Editor or via `psql`)

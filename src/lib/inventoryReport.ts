@@ -69,6 +69,8 @@ export interface ReportItem {
 /** One printed line: a single tool (detailed) or several identical tools (summary). */
 export interface ReportRow {
   key: string;
+  /** The tools (inventory_items ids) this line stands for. */
+  itemIds: string[];
   name: string;
   imageUrl?: string | null;
   categoryId: string | null;
@@ -245,6 +247,7 @@ export function summarizeItems(items: ReportItem[], key: string): ReportRow {
   const pricesSame = prices.length === items.length && same((i) => i.unitPrice);
   return {
     key,
+    itemIds: items.map((i) => i.id),
     name: first.name,
     imageUrl: items.find((i) => i.imageUrl)?.imageUrl ?? null,
     categoryId: first.categoryId,

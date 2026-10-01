@@ -49,7 +49,7 @@ const AlertDialogContent = React.forwardRef<
         {headers.length > 0 && (
           <div className="dialog-fixed-header shrink-0 border-b bg-card px-4 pb-3 pt-4 sm:px-6 sm:pt-6">{headers}</div>
         )}
-        <div className="dialog-body relative grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)] content-start gap-4 overflow-y-auto overscroll-contain px-4 pt-4 sm:px-6">
+        <div className="dialog-body relative grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)] auto-rows-max content-start gap-4 overflow-y-auto overscroll-contain px-4 pt-4 sm:px-6">
           {body}
         </div>
       </AlertDialogPrimitive.Content>

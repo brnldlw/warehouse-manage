@@ -14,6 +14,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import { SearchBox } from '@/components/SearchBox';
 import { VanToolsDialog } from '@/components/VanToolsDialog';
 import { AddTechnicianDialog } from '@/components/AddTechnicianDialog';
+import { DeactivateTechDialog } from '@/components/moves/DeactivateTechDialog';
 import { matchesSearch } from '@/lib/search';
 import { TruckInfo } from '@/lib/inventoryReport';
 import { TechSignInStatus, describeLinkLifetime, getTechSignInStatus, resendTechInvite } from '@/lib/adminTechApi';
@@ -65,6 +66,7 @@ export const TechManagement: React.FC = () => {
   const [vanTech, setVanTech] = useState<TechUser | null>(null);
   const [showAdd, setShowAdd] = useState(false);
   const [resendingId, setResendingId] = useState<string | null>(null);
+  const [deactivating, setDeactivating] = useState<TechUser | null>(null);
   const { toast } = useToast();
   const { userProfile, isAdmin } = useAuth();
 
@@ -256,17 +258,34 @@ export const TechManagement: React.FC = () => {
     }
   };
 
+  const setTechStatus = async (tech: TechUser, newStatus: 'active' | 'inactive') => {
+    const { data, error } = await supabase
+      .from('user_profiles')
+      .update({ status: newStatus, is_active: newStatus === 'active' })
+      .eq('id', tech.id)
+      .eq('company_id', userProfile?.company_id)
+      .select('id');
+    if (error) throw new Error(error.message);
+    if (!data?.length) throw new Error("the database didn't save the change (you may not have permission).");
+  };
+
   const toggleTechStatus = async (tech: TechUser) => {
     setLoading(true);
+    // A tech with tools on their van: ask what to do with the tools first (live count, the
+    // list's number may be out of date).
+    if (isActiveTech(tech) && tech.truck_id) {
+      const { count, error } = await supabase
+        .from('inventory_items').select('id', { count: 'exact', head: true })
+        .eq('company_id', userProfile?.company_id).eq('location_type', 'truck').eq('assigned_truck_id', tech.truck_id);
+      if (error || (count ?? 0) > 0) {
+        setLoading(false);
+        setDeactivating(tech);
+        return;
+      }
+    }
     try {
       const newStatus = isActiveTech(tech) ? 'inactive' : 'active';
-
-      const { error } = await supabase
-        .from('user_profiles')
-        .update({ status: newStatus, is_active: newStatus === 'active' })
-        .eq('id', tech.id);
-
-      if (error) throw error;
+      await setTechStatus(tech, newStatus);
 
       await fetchTechs();
       toast({
@@ -276,7 +295,7 @@ export const TechManagement: React.FC = () => {
     } catch (error) {
       toast({
         title: 'Error',
-        description: 'Failed to update technician status',
+        description: `Failed to update technician status: ${error instanceof Error ? error.message : String(error)}`,
         variant: 'destructive',
       });
     } finally {
@@ -507,6 +526,26 @@ export const TechManagement: React.FC = () => {
           heading={`${techName(vanTech)}'s van`}
           techNames={techs.filter((t) => t.truck_id === vanTech.truck_id).map(techName)}
           onClose={() => setVanTech(null)}
+          onToolsChanged={fetchTechs}
+        />
+      )}
+      {deactivating && deactivating.truck_id && (
+        <DeactivateTechDialog
+          techId={deactivating.id}
+          techName={techName(deactivating)}
+          truck={{ id: deactivating.truck_id, name: deactivating.truck_name ?? 'Van', identifier: deactivating.truck_identifier ?? '' }}
+          vanTechNames={techs.filter((t) => t.truck_id === deactivating.truck_id && isActiveTech(t)).map(techName)}
+          companyId={userProfile?.company_id}
+          userId={userProfile?.id}
+          printedBy={[userProfile?.first_name, userProfile?.last_name].filter(Boolean).join(' ') || userProfile?.email || ''}
+          onCancel={() => setDeactivating(null)}
+          onToolsChanged={fetchTechs}
+          onDeactivate={async () => {
+            await setTechStatus(deactivating, 'inactive');
+            setDeactivating(null);
+            await fetchTechs();
+            toast({ title: 'Technician deactivated', description: `${techName(deactivating)} is now inactive.` });
+          }}
         />
       )}
       <AddTechnicianDialog

@@ -1,9 +1,28 @@
 // Creating vans (the `trucks` table) with plain-English errors.
 
 import { supabase } from '@/lib/supabase';
+import { fetchAll } from '@/lib/fetchAll';
 import { TruckInfo } from '@/lib/inventoryReport';
 
 const escapeLike = (s: string) => s.replace(/[\\%_]/g, (c) => `\\${c}`);
+
+/** This company's vans, sorted, each with the names of the techs assigned to it now. */
+export async function loadVans(companyId: string): Promise<(TruckInfo & { techs: string[] })[]> {
+  const [trucks, assignments, people] = await Promise.all([
+    fetchAll(() => supabase.from('trucks').select('id, name, identifier').eq('company_id', companyId).order('name').order('id')),
+    fetchAll(() => supabase.from('user_truck_assignments').select('user_id, truck_id').eq('company_id', companyId).order('id'))
+      .catch(() => []),
+    fetchAll(() => supabase.from('user_profiles').select('id, first_name, last_name, email, is_active, status').eq('company_id', companyId).order('id'))
+      .catch(() => []),
+  ]);
+  const nameById = new Map(people
+    .filter((p) => p.is_active !== false && p.status !== 'inactive')
+    .map((p) => [p.id as string, [p.first_name, p.last_name].filter(Boolean).join(' ') || (p.email as string) || 'Unnamed']));
+  return trucks.map((t) => ({
+    id: t.id, name: t.name, identifier: t.identifier ?? '',
+    techs: assignments.filter((a) => a.truck_id === t.id).map((a) => nameById.get(a.user_id as string)).filter(Boolean) as string[],
+  }));
+}
 
 export type CreateVanResult = { van: TruckInfo; error?: undefined } | { van?: undefined; error: string };
 
