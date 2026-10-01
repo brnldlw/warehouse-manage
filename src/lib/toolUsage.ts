@@ -85,10 +85,26 @@ export function toOutEvents(logs: TransferLog[], trucks: TruckInfo[]): OutEvent[
     return t ? { vanKey: t.id, vanLabel: truckLabel(t) } : { vanKey: `name:${normalizeName(name)}`, vanLabel: name || 'Unknown van' };
   };
 
+  // 0. Mistakes that were undone don't count: the undo itself, and moves from a batch that
+  //    was later undone. Their database-trigger rows are found by tool id + time.
+  const undoneBatches = new Set(logs
+    .filter((l) => l.action === 'transferred' && l.details?.undo && l.details?.undo_of_batch)
+    .map((l) => str(l.details!.undo_of_batch)));
+  const isIgnoredApp = (l: TransferLog) => l.action === 'transferred'
+    && (!!l.details?.undo || (!!l.details?.batch_id && undoneBatches.has(str(l.details.batch_id))));
+  const ignoredTimes = new Map<string, number[]>(); // item id -> times of ignored moves
+  for (const l of logs) {
+    if (!isIgnoredApp(l) || !str(l.details?.item_id)) continue;
+    const id = str(l.details!.item_id);
+    (ignoredTimes.get(id) ?? ignoredTimes.set(id, []).get(id)!).push(Date.parse(l.timestamp));
+  }
+  const ignoredTrigger = (l: TransferLog) => !!l.item_id
+    && (ignoredTimes.get(l.item_id) ?? []).some((t) => Math.abs(t - Date.parse(l.timestamp)) <= MATCH_WINDOW_MS);
+
   // 1. Trigger rows, grouped into trips (same moment, same van, same tool).
   const trips = new Map<string, OutEvent>();
   for (const log of logs) {
-    if (log.action !== 'tool_transfer') continue;
+    if (log.action !== 'tool_transfer' || ignoredTrigger(log)) continue;
     const d = log.details ?? {};
     const truckId = log.truck_id ?? (str(d.new_truck_id) || null);
     if (!truckId) continue; // went back to the warehouse
@@ -109,7 +125,7 @@ export function toOutEvents(logs: TransferLog[], trucks: TruckInfo[]): OutEvent[
 
   // 2. App rows, only when the trigger didn't record the same move.
   for (const log of logs) {
-    if (log.action !== 'transferred') continue;
+    if (log.action !== 'transferred' || isIgnoredApp(log)) continue;
     const d = log.details ?? {};
     const toName = str(d.to);
     if (!toName || normalizeName(toName) === 'warehouse') continue;

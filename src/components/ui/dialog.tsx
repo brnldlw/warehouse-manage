@@ -70,7 +70,7 @@ const DialogContent = React.forwardRef<
             {headers}
           </div>
         )}
-        <div className={cn("dialog-body relative grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)] content-start gap-4 overflow-y-auto overscroll-contain px-4 pt-4 sm:px-6", bodyClassName)}>
+        <div className={cn("dialog-body relative grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)] auto-rows-max content-start gap-4 overflow-y-auto overscroll-contain px-4 pt-4 sm:px-6", bodyClassName)}>
           {body}
         </div>
         <DialogPrimitive.Close className="absolute right-2 top-2 z-20 flex h-11 w-11 items-center justify-center rounded-md bg-background opacity-80 ring-offset-background transition-opacity hover:opacity-100 focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:pointer-events-none">
