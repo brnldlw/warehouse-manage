@@ -263,6 +263,8 @@ export const TechManagement: React.FC = () => {
     }
   };
 
+  // Allowed from the browser only for an active admin of the same company, on someone else
+  // (database trigger, migration 005); its plain-English refusal is shown as-is.
   const setTechStatus = async (tech: TechUser, newStatus: 'active' | 'inactive') => {
     const { data, error } = await supabase
       .from('user_profiles')
@@ -531,8 +533,9 @@ export const TechManagement: React.FC = () => {
                   </TableCell>
                   <TableCell onClick={(e) => e.stopPropagation()}>
                     <div className="flex flex-wrap gap-2">
-                      {/* You can't deactivate yourself, or the last active admin. */}
-                      {!isMe(tech) && (
+                      {/* Admins only (the database enforces this too, migration 005). You can't
+                          deactivate yourself, or the last active admin. */}
+                      {isAdmin && !isMe(tech) && (
                         <Button
                           size="sm"
                           className="h-11"
