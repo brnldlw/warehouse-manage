@@ -6,10 +6,11 @@ import * as XLSX from 'xlsx';
 import { supabase } from '@/lib/supabase';
 import { fetchAll } from '@/lib/fetchAll';
 import { formatPurchaseDate, poColumnsAvailable } from '@/lib/poSupport';
+import { colorColumnAvailable, colorLabel } from '@/lib/toolColor';
 
 export type Condition = 'good' | 'fair' | 'poor' | 'damaged';
 export type ColumnKey =
-  | 'name' | 'category' | 'serial' | 'barcode' | 'poNumber' | 'purchaseDate' | 'condition' | 'location'
+  | 'name' | 'category' | 'color' | 'serial' | 'barcode' | 'poNumber' | 'purchaseDate' | 'condition' | 'location'
   | 'quantity' | 'unitValue' | 'totalValue';
 export type GroupBy = 'none' | 'location' | 'category';
 export type SortBy = 'name' | 'category' | 'location';
@@ -26,6 +27,7 @@ export interface ColumnDef {
 export const COLUMNS: ColumnDef[] = [
   { key: 'name', label: 'Name', width: 34 },
   { key: 'category', label: 'Category', width: 18 },
+  { key: 'color', label: 'Color', width: 10 },
   { key: 'serial', label: 'Serial #', width: 18 },
   { key: 'barcode', label: 'Barcode', width: 18 },
   { key: 'poNumber', label: 'PO #', width: 16 },
@@ -38,11 +40,12 @@ export const COLUMNS: ColumnDef[] = [
 ];
 export const ALL_COLUMN_KEYS = COLUMNS.map((c) => c.key);
 export const PO_COLUMN_KEYS: ColumnKey[] = ['poNumber', 'purchaseDate'];
-/** Printed by default: everything except the PO columns, which are optional. */
-export const DEFAULT_PRINT_COLUMN_KEYS = ALL_COLUMN_KEYS.filter((k) => !PO_COLUMN_KEYS.includes(k));
-/** Columns for exports: all of them, leaving out PO columns until the database has them. */
-export const exportColumnKeys = (poSupported: boolean | null) =>
-  (poSupported ? ALL_COLUMN_KEYS : DEFAULT_PRINT_COLUMN_KEYS);
+export const COLOR_COLUMN_KEYS: ColumnKey[] = ['color'];
+/** Printed by default: everything except the PO and color columns, which are optional. */
+export const DEFAULT_PRINT_COLUMN_KEYS = ALL_COLUMN_KEYS.filter((k) => !PO_COLUMN_KEYS.includes(k) && !COLOR_COLUMN_KEYS.includes(k));
+/** Columns for exports: all of them, leaving out PO / color columns until the database has them. */
+export const exportColumnKeys = (poSupported: boolean | null, colorSupported: boolean | null = false) =>
+  ALL_COLUMN_KEYS.filter((k) => (poSupported || !PO_COLUMN_KEYS.includes(k)) && (colorSupported || !COLOR_COLUMN_KEYS.includes(k)));
 export const columnDefs = (keys: ColumnKey[]) => COLUMNS.filter((c) => keys.includes(c.key));
 
 /** One physical tool (one inventory_items row). */
@@ -64,6 +67,8 @@ export interface ReportItem {
   poNumber?: string;
   /** "YYYY-MM-DD" or ''. */
   purchaseDate?: string;
+  /** 'red', 'blue', … or '' (none, or the database has no color column yet). */
+  color?: string;
 }
 
 /** One printed line: a single tool (detailed) or several identical tools (summary). */
@@ -89,6 +94,10 @@ export interface ReportRow {
   poNumber: string;
   /** "YYYY-MM-DD", "Several" or ''. */
   purchaseDate: string;
+  /** "Red", "Mixed" or ''. */
+  color: string;
+  /** The color value when every tool in the line has the same one ('' otherwise). */
+  colorValue: string;
 }
 
 export interface ReportGroup {
@@ -133,9 +142,11 @@ export const truckLabel = (t: TruckInfo) => (t.identifier ? `${t.name} (${t.iden
 
 const ITEM_COLUMNS = 'id, name, category_id, serial_number, barcode, condition, location_type, assigned_truck_id, unit_price, group_id, image_url';
 
-/** Ask for the PO columns only when the database has them (migration 003). */
-const itemColumns = async (): Promise<string> =>
-  ((await poColumnsAvailable()) ? `${ITEM_COLUMNS}, po_number, purchase_date` : ITEM_COLUMNS);
+/** Ask for the PO / color columns only when the database has them (migrations 003, 004). */
+const itemColumns = async (): Promise<string> => {
+  const [po, color] = await Promise.all([poColumnsAvailable(), colorColumnAvailable()]);
+  return [ITEM_COLUMNS, po ? 'po_number, purchase_date' : '', color ? 'color' : ''].filter(Boolean).join(', ');
+};
 
 /** One inventory_items row -> ReportItem. */
 function toReportItem(r: Record<string, unknown>, categoryName: Map<string, string>, truckById: Map<string, TruckInfo>): ReportItem {
@@ -158,6 +169,7 @@ function toReportItem(r: Record<string, unknown>, categoryName: Map<string, stri
     imageUrl: (r.image_url as string | null) ?? null,
     poNumber: ((r.po_number as string | null) ?? '').trim(),
     purchaseDate: (r.purchase_date as string | null) ?? '',
+    color: ((r.color as string | null) ?? '').toLowerCase(),
   };
 }
 
@@ -266,6 +278,8 @@ export function summarizeItems(items: ReportItem[], key: string): ReportRow {
       const dates = [...new Set(items.map((i) => i.purchaseDate ?? '').filter(Boolean))];
       return dates.length === 1 ? dates[0] : dates.length > 1 ? 'Several' : '';
     })(),
+    color: same((i) => i.color ?? '') ? colorLabel(first.color) : 'Mixed',
+    colorValue: same((i) => i.color ?? '') ? first.color ?? '' : '',
   };
 }
 
