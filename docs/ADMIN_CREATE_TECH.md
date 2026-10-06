@@ -1,7 +1,7 @@
 # admin-create-tech (Edge Function): deploy and test
 
-Lets an **admin** add technicians from the Technicians page, resend invites, and see each
-technician's last sign-in. It runs on Supabase's servers because creating someone else's login
+Lets an **admin** add technicians from the Technicians page, resend invites, see each
+person's last sign-in, and **change roles** (make someone an admin, or a tech again). It runs on Supabase's servers because creating someone else's login
 needs the **service role key**, which must never be in the website.
 
 Code: `supabase/functions/admin-create-tech/` (`index.ts` = entry point, `handler.ts` = all checks).
@@ -13,6 +13,19 @@ What it guarantees:
 - Vans and technicians from other companies are refused.
 - If the profile can't be saved, the new login is deleted again (no half-created accounts).
 - Every add / resend is written to `activity_logs`.
+- **Role changes** (`set_role`): only `tech` ↔ `admin`; only people in the admin's own company;
+  never your own role; never the last active admin; each change logged as `role_changed` with
+  who changed whom, from what, to what. (A switched-off hook for a future platform-owner
+  `super_admin` is described in `docs/PENDING_DB_FIXES.md`, item 7.)
+
+### Updating it (after a new version of the code, e.g. Caplinger fixes 7)
+
+Only step 5 below is needed — the settings from the first deploy stay:
+```powershell
+npx supabase@latest functions deploy admin-create-tech --project-ref actgfkpgwcfwxaecplhi --no-verify-jwt --use-api
+```
+Until it's redeployed, the Role buttons on Technicians show the server's "Unknown action" message
+and nothing changes.
 
 Until it's deployed, the Technicians page still works; "Add Technician" shows
 "not deployed yet", and Last sign-in / Resend invite are hidden.

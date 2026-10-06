@@ -14,6 +14,8 @@ import { PrintPortal } from '@/components/print/PrintPortal';
 import { VanToolSheets } from '@/components/print/VanToolSheets';
 import { matchesSearch } from '@/lib/search';
 import { usePoSupport } from '@/lib/poSupport';
+import { useColorSupport } from '@/lib/toolColor';
+import { ColorDot } from '@/components/ColorDot';
 import {
   Detail, ReportItem, conditionLabel, exportColumnKeys, ReportMeta, TruckInfo, buildRows, cellText, downloadCsv, downloadXlsx,
   exportFileName, formatDateTime, formatMoney, groupRows, loadCompanyName, loadVanItems, sortRows, truckLabel,
@@ -38,7 +40,8 @@ export const VanToolsDialog: React.FC<VanToolsDialogProps> = ({ truck, techNames
   const { printing, print } = usePrint();
   const poSupported = usePoSupport();
   // Every row is on this van, so no location column; PO columns once the database has them.
-  const EXPORT_COLUMNS = exportColumnKeys(poSupported).filter((k) => k !== 'location');
+  const colorSupported = useColorSupport();
+  const EXPORT_COLUMNS = exportColumnKeys(poSupported, colorSupported).filter((k) => k !== 'location');
   const [items, setItems] = useState<ReportItem[]>([]);
   const [companyName, setCompanyName] = useState('');
   const [loading, setLoading] = useState(false);
@@ -82,7 +85,7 @@ export const VanToolsDialog: React.FC<VanToolsDialogProps> = ({ truck, techNames
 
   const allRows = useMemo(() => sortRows(buildRows(items, detail), 'name'), [items, detail]);
   const shownRows = useMemo(
-    () => allRows.filter((r) => matchesSearch(search, r.name, r.category, r.serial, r.barcode, r.poNumber, r.condition)),
+    () => allRows.filter((r) => matchesSearch(search, r.name, r.category, r.serial, r.barcode, r.poNumber, r.condition, r.color)),
     [allRows, search],
   );
   const toolCount = (rows: typeof allRows) => rows.reduce((n, r) => n + r.quantity, 0);
@@ -219,10 +222,11 @@ export const VanToolsDialog: React.FC<VanToolsDialogProps> = ({ truck, techNames
                             <button type="button" onClick={() => toggleExpanded(r.key)} aria-expanded={isOpen}
                               className="flex min-h-[44px] items-center gap-1 text-left font-medium">
                               {isOpen ? <ChevronUp className="h-4 w-4 shrink-0" /> : <ChevronDown className="h-4 w-4 shrink-0" />}
+                              <ColorDot color={r.colorValue} className="mr-1" />
                               {r.name}
                               <span className="ml-1 whitespace-nowrap text-sm font-normal text-blue-800 underline">{isOpen ? 'hide units' : 'show units'}</span>
                             </button>
-                          ) : r.name}
+                          ) : <span className="flex items-center gap-2"><ColorDot color={r.colorValue} />{r.name}</span>}
                         </TableCell>
                         <TableCell>{r.category}</TableCell>
                         <TableCell className="font-mono text-sm">{r.serial}</TableCell>
@@ -242,7 +246,7 @@ export const VanToolsDialog: React.FC<VanToolsDialogProps> = ({ truck, techNames
                               <SelectBox label={`Select ${u.name} #${idx + 1}`} checked={selected.has(id)} onChange={(on) => setSome([id], on)} />
                             </TableCell>
                             <TableCell className="text-sm text-gray-600 text-center">#{idx + 1}</TableCell>
-                            <TableCell className="pl-8 text-sm">{u.name}</TableCell>
+                            <TableCell className="pl-8 text-sm"><span className="flex items-center gap-2"><ColorDot color={u.color} />{u.name}</span></TableCell>
                             <TableCell />
                             <TableCell className="font-mono text-sm">{u.serial}</TableCell>
                             <TableCell className="font-mono text-sm">{u.barcode}</TableCell>

@@ -17,7 +17,8 @@ import { AddTechnicianDialog } from '@/components/AddTechnicianDialog';
 import { DeactivateTechDialog } from '@/components/moves/DeactivateTechDialog';
 import { matchesSearch } from '@/lib/search';
 import { TruckInfo } from '@/lib/inventoryReport';
-import { TechSignInStatus, describeLinkLifetime, getTechSignInStatus, resendTechInvite } from '@/lib/adminTechApi';
+import { AppRole, TechSignInStatus, describeLinkLifetime, getTechSignInStatus, resendTechInvite } from '@/lib/adminTechApi';
+import { RoleChangeDialog } from '@/components/RoleChangeDialog';
 
 interface TechUser {
   id: string;
@@ -28,6 +29,7 @@ interface TechUser {
   specialty?: string;
   status: string;
   is_active?: boolean | null;
+  role: AppRole;
   created_at: string;
   truck_id?: string;
   truck_name?: string;
@@ -36,6 +38,7 @@ interface TechUser {
 }
 
 type StatusTab = 'active' | 'inactive' | 'all';
+type RoleTab = 'all' | 'admin' | 'tech';
 type SortKey = 'name' | 'van' | 'status' | 'lastSignIn';
 
 // Older profiles may have no `status`; fall back to is_active.
@@ -67,6 +70,8 @@ export const TechManagement: React.FC = () => {
   const [showAdd, setShowAdd] = useState(false);
   const [resendingId, setResendingId] = useState<string | null>(null);
   const [deactivating, setDeactivating] = useState<TechUser | null>(null);
+  const [roleTab, setRoleTab] = useState<RoleTab>('all');
+  const [roleChange, setRoleChange] = useState<{ person: TechUser; to: AppRole } | null>(null);
   const { toast } = useToast();
   const { userProfile, isAdmin } = useAuth();
 
@@ -132,8 +137,8 @@ export const TechManagement: React.FC = () => {
 
       const { data, error } = await supabase
         .from('user_profiles')
-        .select('id, email, first_name, last_name, phone, specialty, status, is_active, created_at')
-        .eq('role', 'tech')
+        .select('id, email, first_name, last_name, phone, specialty, status, is_active, role, created_at')
+        .in('role', ['tech', 'admin'])
         .eq('company_id', userProfile.company_id)
         .order('created_at', { ascending: false });
 
@@ -303,16 +308,22 @@ export const TechManagement: React.FC = () => {
     }
   };
 
+  // Role filter first, then the Active / Inactive / All tabs count within it.
+  const inRole = useMemo(() => techs.filter((t) => roleTab === 'all' || t.role === roleTab), [techs, roleTab]);
   const counts = {
-    active: techs.filter(isActiveTech).length,
-    inactive: techs.filter((t) => !isActiveTech(t)).length,
-    all: techs.length,
+    active: inRole.filter(isActiveTech).length,
+    inactive: inRole.filter((t) => !isActiveTech(t)).length,
+    all: inRole.length,
   };
+  const roleCounts = { all: techs.length, admin: techs.filter((t) => t.role === 'admin').length, tech: techs.filter((t) => t.role === 'tech').length };
+  const onlyTechs = techs.filter((t) => t.role === 'tech');
+  const activeAdmins = techs.filter((t) => t.role === 'admin' && isActiveTech(t)).length;
+  const isMe = (t: TechUser) => t.id === userProfile?.id;
   const lastSignIn = (t: TechUser) => signIn?.[t.id]?.lastSignInAt ?? null;
 
   const inTab = useMemo(
-    () => techs.filter((t) => tab === 'all' || (tab === 'active') === isActiveTech(t)),
-    [techs, tab],
+    () => inRole.filter((t) => tab === 'all' || (tab === 'active') === isActiveTech(t)),
+    [inRole, tab],
   );
   const visibleTechs = useMemo(() => {
     const list = inTab.filter((t) =>
@@ -371,7 +382,7 @@ export const TechManagement: React.FC = () => {
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-sm font-medium text-gray-600">Total Techs</p>
-                <p className="text-3xl font-bold text-blue-600">{techs.length}</p>
+                <p className="text-3xl font-bold text-blue-600">{onlyTechs.length}</p>
               </div>
               <UserCheck className="h-8 w-8 text-blue-600" />
             </div>
@@ -384,7 +395,7 @@ export const TechManagement: React.FC = () => {
               <div>
                 <p className="text-sm font-medium text-gray-600">Active Techs</p>
                 <p className="text-3xl font-bold text-green-600">
-                  {counts.active}
+                  {onlyTechs.filter(isActiveTech).length}
                 </p>
               </div>
               <UserCheck className="h-8 w-8 text-green-600" />
@@ -421,11 +432,19 @@ export const TechManagement: React.FC = () => {
           </div>
         </CardHeader>
         <CardContent className="space-y-4">
-          <div className="flex flex-col md:flex-row md:items-start gap-3">
-            <div className="flex rounded-md border-2 border-gray-800 overflow-hidden shrink-0" role="tablist" aria-label="Show technicians">
+          <div className="flex flex-col md:flex-row md:flex-wrap md:items-start gap-3">
+            <div className="flex w-full sm:w-auto rounded-md border-2 border-gray-800 overflow-hidden shrink-0" role="tablist" aria-label="Show admins or techs">
+              {(['all', 'admin', 'tech'] as RoleTab[]).map((r) => (
+                <button key={r} type="button" role="tab" aria-selected={roleTab === r} onClick={() => setRoleTab(r)}
+                  className={`min-h-[48px] flex-1 px-2 py-1 leading-tight sm:flex-none sm:px-4 text-base font-medium ${roleTab === r ? 'bg-gray-900 text-white' : 'bg-white text-gray-900'}`}>
+                  {r === 'all' ? 'Everyone' : r === 'admin' ? 'Admins' : 'Techs'} ({roleCounts[r]})
+                </button>
+              ))}
+            </div>
+            <div className="flex w-full sm:w-auto rounded-md border-2 border-gray-800 overflow-hidden shrink-0" role="tablist" aria-label="Show technicians">
               {(['active', 'inactive', 'all'] as StatusTab[]).map((t) => (
                 <button key={t} type="button" role="tab" aria-selected={tab === t} onClick={() => setTab(t)}
-                  className={`h-12 px-4 text-base font-medium ${tab === t ? 'bg-gray-900 text-white' : 'bg-white text-gray-900'}`}>
+                  className={`min-h-[48px] flex-1 px-2 py-1 leading-tight sm:flex-none sm:px-4 text-base font-medium ${tab === t ? 'bg-gray-900 text-white' : 'bg-white text-gray-900'}`}>
                   {t === 'active' ? 'Active' : t === 'inactive' ? 'Inactive' : 'All'} ({counts[t]})
                 </button>
               ))}
@@ -442,6 +461,7 @@ export const TechManagement: React.FC = () => {
             <TableHeader>
               <TableRow>
                 <SortHead k="name">Name</SortHead>
+                <TableHead>Role</TableHead>
                 <TableHead>Email</TableHead>
                 <SortHead k="van">Assigned Van</SortHead>
                 <TableHead>Tools</TableHead>
@@ -453,8 +473,8 @@ export const TechManagement: React.FC = () => {
             <TableBody>
               {visibleTechs.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={7} className="py-8 text-center text-gray-700">
-                    {search ? 'No technicians match your search.' : `No ${tab === 'all' ? '' : tab + ' '}technicians.`}
+                  <TableCell colSpan={8} className="py-8 text-center text-gray-700">
+                    {search ? 'No one matches your search.' : `No ${tab === 'all' ? '' : tab + ' '}${roleTab === 'admin' ? 'admins' : roleTab === 'tech' ? 'techs' : 'people'}.`}
                   </TableCell>
                 </TableRow>
               )}
@@ -463,6 +483,23 @@ export const TechManagement: React.FC = () => {
                   <TableCell className="font-medium">
                     {techName(tech)}
                     {tech.phone && <span className="block text-sm font-normal text-gray-600">{tech.phone}</span>}
+                  </TableCell>
+                  <TableCell onClick={(e) => e.stopPropagation()}>
+                    {isAdmin && !isMe(tech) ? (
+                      <div className="flex w-max overflow-hidden rounded-md border-2 border-gray-800" role="radiogroup" aria-label={`Role for ${techName(tech)}`}>
+                        {(['tech', 'admin'] as AppRole[]).map((r) => (
+                          <button key={r} type="button" role="radio" aria-checked={tech.role === r}
+                            onClick={() => { if (tech.role !== r) setRoleChange({ person: tech, to: r }); }}
+                            className={`h-11 px-3 text-sm font-semibold ${tech.role === r ? 'bg-gray-900 text-white' : 'bg-white text-gray-900 hover:bg-gray-100'}`}>
+                            {r === 'tech' ? 'Tech' : 'Admin'}
+                          </button>
+                        ))}
+                      </div>
+                    ) : (
+                      <Badge variant={tech.role === 'admin' ? 'default' : 'outline'}>
+                        {tech.role === 'admin' ? 'Admin' : 'Tech'}{isMe(tech) ? ' (you)' : ''}
+                      </Badge>
+                    )}
                   </TableCell>
                   <TableCell>{tech.email}</TableCell>
                   <TableCell>
@@ -494,15 +531,19 @@ export const TechManagement: React.FC = () => {
                   </TableCell>
                   <TableCell onClick={(e) => e.stopPropagation()}>
                     <div className="flex flex-wrap gap-2">
-                      <Button
-                        size="sm"
-                        className="h-11"
-                        variant={isActiveTech(tech) ? 'destructive' : 'default'}
-                        onClick={() => toggleTechStatus(tech)}
-                        disabled={loading}
-                      >
-                        {isActiveTech(tech) ? 'Deactivate' : 'Activate'}
-                      </Button>
+                      {/* You can't deactivate yourself, or the last active admin. */}
+                      {!isMe(tech) && (
+                        <Button
+                          size="sm"
+                          className="h-11"
+                          variant={isActiveTech(tech) ? 'destructive' : 'default'}
+                          onClick={() => toggleTechStatus(tech)}
+                          disabled={loading || (isActiveTech(tech) && tech.role === 'admin' && activeAdmins <= 1)}
+                          title={isActiveTech(tech) && tech.role === 'admin' && activeAdmins <= 1 ? 'The only active admin can’t be deactivated' : undefined}
+                        >
+                          {isActiveTech(tech) ? 'Deactivate' : 'Activate'}
+                        </Button>
+                      )}
                       {isAdmin && signIn && signIn[tech.id] && !lastSignIn(tech) && (
                         <Button size="sm" variant="outline" className="h-11 border-2" disabled={resendingId === tech.id}
                           onClick={() => resendInvite(tech)}>
@@ -527,6 +568,22 @@ export const TechManagement: React.FC = () => {
           techNames={techs.filter((t) => t.truck_id === vanTech.truck_id).map(techName)}
           onClose={() => setVanTech(null)}
           onToolsChanged={fetchTechs}
+        />
+      )}
+      {roleChange && (
+        <RoleChangeDialog
+          userId={roleChange.person.id}
+          name={techName(roleChange.person)}
+          to={roleChange.to}
+          onClose={() => setRoleChange(null)}
+          onChanged={(to) => {
+            const name = techName(roleChange.person);
+            setTechs((prev) => prev.map((t) => (t.id === roleChange.person.id ? { ...t, role: to } : t)));
+            setRoleChange(null);
+            toast({ title: 'Role changed', description: `${name} is now ${to === 'admin' ? 'an admin' : 'a tech'}.` });
+            fetchTechs();
+            fetchTechActivities();
+          }}
         />
       )}
       {deactivating && deactivating.truck_id && (

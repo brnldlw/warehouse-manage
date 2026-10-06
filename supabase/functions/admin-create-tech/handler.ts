@@ -4,10 +4,12 @@
 // Actions (POST JSON body { action, ... }), all limited to the CALLER's company:
 //   create  – add a technician: send an invite email, or create the login without email
 //   resend  – re-send the invite (or a "set your password" email) to a tech who never signed in
-//   status  – sign-in status (last sign-in, invited, confirmed) for the company's technicians
+//   status  – sign-in status (last sign-in, invited, confirmed) for the company's techs and admins
+//   set_role – make someone an admin, or a tech again (see setRole for every rule)
 //
 // Security: the caller's JWT is checked with the Auth server; the caller must be an active
 // admin; the company always comes from the caller's own profile, never from the request.
+// (One planned exception, switched off: see SUPER_ADMIN_CAN_SET_ROLES.)
 
 // deno-lint-ignore-file no-explicit-any
 type Admin = any; // Supabase client created with the service role key
@@ -28,6 +30,22 @@ const json = (status: number, body: Record<string, unknown>) =>
 const fail = (status: number, error: string, code?: string) => json(status, { ok: false, error, code });
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+/** The only roles an admin can give or take away here. */
+export const ASSIGNABLE_ROLES = ['tech', 'admin'] as const;
+type AssignableRole = typeof ASSIGNABLE_ROLES[number];
+const isAssignable = (r: unknown): r is AssignableRole => typeof r === 'string' && (ASSIGNABLE_ROLES as readonly string[]).includes(r);
+
+/**
+ * HOOK for the platform owner's super_admin role (planned, not built yet).
+ * When it exists, a super_admin may change roles in ANY company: set_role then takes the company
+ * from the request (body.companyId) instead of the caller's profile. Every other rule in setRole
+ * still applies (only tech/admin, never your own role, never the last active admin, logged).
+ * Before switching this on, the database must stop anyone from giving themselves super_admin
+ * (see docs/PENDING_DB_FIXES.md, items 6 and 7). Until then super_admin is treated like any
+ * non-admin and gets "Only admins can …".
+ */
+export const SUPER_ADMIN_CAN_SET_ROLES = false;
 const clean = (v: unknown, max = 200) => (typeof v === 'string' ? v.trim().slice(0, max) : '');
 
 function randomPassword(): string {
@@ -82,14 +100,22 @@ export async function handleRequest(req: Request, admin: Admin, env: Env): Promi
     .eq('id', caller.id).maybeSingle();
   if (profileError) return fail(500, `Couldn't check your account: ${profileError.message}`);
   const callerActive = callerProfile && callerProfile.is_active !== false && callerProfile.status !== 'inactive';
-  if (!callerProfile || callerProfile.role !== 'admin' || !callerActive) {
-    return fail(403, 'Only admins can manage technicians.', 'not_admin');
-  }
-  const companyId: string | null = callerProfile.company_id;
-  if (!companyId) return fail(403, 'Your admin account is not linked to a company.', 'no_company');
 
   let body: Record<string, unknown>;
   try { body = await req.json(); } catch { return fail(400, 'The request was not valid JSON.'); }
+
+  // Super admin (platform owner): only set_role, only once switched on. See SUPER_ADMIN_CAN_SET_ROLES.
+  if (SUPER_ADMIN_CAN_SET_ROLES && callerActive && callerProfile.role === 'super_admin' && body.action === 'set_role') {
+    const targetCompany = clean(body.companyId, 64);
+    if (!targetCompany) return fail(400, 'Which company?', 'company_required');
+    return setRole(admin, body, caller.id, callerProfile, targetCompany);
+  }
+
+  if (!callerProfile || callerProfile.role !== 'admin' || !callerActive) {
+    return fail(403, body.action === 'set_role' ? 'Only active admins can change roles.' : 'Only admins can manage technicians.', 'not_admin');
+  }
+  const companyId: string | null = callerProfile.company_id;
+  if (!companyId) return fail(403, 'Your admin account is not linked to a company.', 'no_company');
 
   const redirectTo = env.siteUrl
     ? `${env.siteUrl.replace(/\/$/, '')}/reset-password`
@@ -99,6 +125,7 @@ export async function handleRequest(req: Request, admin: Admin, env: Env): Promi
     case 'create': return createTech(admin, env, body, caller.id, companyId, redirectTo);
     case 'resend': return resendInvite(admin, env, body, caller.id, companyId, redirectTo);
     case 'status': return techStatus(admin, companyId);
+    case 'set_role': return setRole(admin, body, caller.id, callerProfile, companyId);
     default: return fail(400, 'Unknown action.');
   }
 }
@@ -197,7 +224,7 @@ async function resendInvite(admin: Admin, env: Env, body: Record<string, unknown
   const { data: tech, error } = await admin.from('user_profiles')
     .select('id, email, first_name, last_name, role, company_id').eq('id', techId).eq('company_id', companyId).maybeSingle();
   if (error) return fail(500, `Couldn't find the technician: ${error.message}`);
-  if (!tech || tech.role !== 'tech') return fail(404, 'That technician isn’t in your company.', 'not_found');
+  if (!tech || !isAssignable(tech.role)) return fail(404, 'That person isn’t in your company.', 'not_found');
 
   const { data: authData, error: authError } = await admin.auth.admin.getUserById(techId);
   if (authError || !authData?.user) return fail(404, `${fullName(tech)} has no login. Remove and re-add them.`, 'no_login');
@@ -219,8 +246,68 @@ async function resendInvite(admin: Admin, env: Env, body: Record<string, unknown
   return json(200, { ok: true, email: u.email, inviteLinkSeconds: env.inviteLinkSeconds });
 }
 
+const isActiveProfile = (p: { is_active?: boolean | null; status?: string | null }) => p.is_active !== false && p.status !== 'inactive';
+
+async function countActiveAdmins(admin: Admin, companyId: string): Promise<number> {
+  const { data, error } = await admin.from('user_profiles').select('id, is_active, status').eq('company_id', companyId).eq('role', 'admin');
+  if (error) throw new Error(error.message);
+  return (data ?? []).filter(isActiveProfile).length;
+}
+
+/**
+ * Change someone's role between 'tech' and 'admin'. Rules (all checked here, on the server):
+ * - the caller is an active admin (checked in handleRequest), acting in their own company
+ * - the person must be in that company, and currently a tech or an admin
+ * - only 'tech' and 'admin' can be given
+ * - you can't change your own role
+ * - the last active admin in a company can't be made a tech
+ * - every change is written to activity_logs: who changed whom, from what, to what
+ */
+async function setRole(admin: Admin, body: Record<string, unknown>, callerId: string, callerProfile: any, companyId: string) {
+  const targetId = clean(body.userId, 64);
+  const newRole = body.role;
+  if (!targetId) return fail(400, 'Whose role?', 'user_required');
+  if (!isAssignable(newRole)) return fail(400, 'The role must be "tech" or "admin".', 'bad_role');
+  if (targetId === callerId) return fail(403, "You can't change your own role. Ask another admin to do it.", 'own_role');
+
+  const { data: target, error } = await admin.from('user_profiles')
+    .select('id, email, first_name, last_name, role, company_id, is_active, status')
+    .eq('id', targetId).eq('company_id', companyId).maybeSingle();
+  if (error) return fail(500, `Couldn't find that person: ${error.message}`);
+  if (!target) return fail(404, 'That person isn’t in your company.', 'not_found');
+  const name = fullName(target);
+  const fromRole: string = target.role; // kept separately: used for the undo and the history entry
+  if (!isAssignable(fromRole)) return fail(403, `${name}'s role (${fromRole}) can't be changed here.`, 'role_not_changeable');
+  if (fromRole === newRole) return json(200, { ok: true, unchanged: true, name, from: fromRole, to: newRole });
+
+  if (fromRole === 'admin' && isActiveProfile(target)) {
+    const others = (await countActiveAdmins(admin, companyId)) - 1;
+    if (others < 1) return fail(409, `${name} is the only active admin in this company, so they can't be made a tech. Make someone else an admin first.`, 'last_admin');
+  }
+
+  // Only change it if nobody else changed it in the meantime.
+  const { data: updated, error: updateError } = await admin.from('user_profiles')
+    .update({ role: newRole }).eq('id', targetId).eq('company_id', companyId).eq('role', fromRole).select('id');
+  if (updateError) return fail(500, `Couldn't change the role: ${updateError.message}`);
+  if (!updated?.length) return fail(409, `${name}'s role was changed by someone else just now. Reload the page and try again.`, 'conflict');
+
+  // Two admins demoting each other at the same moment could leave none. Check, and undo if so.
+  if (newRole !== 'admin' && (await countActiveAdmins(admin, companyId)) < 1) {
+    await admin.from('user_profiles').update({ role: fromRole }).eq('id', targetId).eq('company_id', companyId);
+    return fail(409, `That would leave the company with no active admin, so ${name} is still an admin.`, 'last_admin');
+  }
+
+  await logActivity(admin, companyId, callerId, 'role_changed', {
+    target_user_id: targetId, target_name: name, target_email: target.email,
+    from_role: fromRole, to_role: newRole,
+    changed_by: callerId, changed_by_name: fullName(callerProfile ?? {}),
+    ...(callerProfile?.company_id !== companyId ? { changed_by_role: callerProfile?.role } : {}),
+  });
+  return json(200, { ok: true, name, from: fromRole, to: newRole });
+}
+
 async function techStatus(admin: Admin, companyId: string) {
-  const { data: techs, error } = await admin.from('user_profiles').select('id').eq('company_id', companyId).eq('role', 'tech');
+  const { data: techs, error } = await admin.from('user_profiles').select('id').eq('company_id', companyId).in('role', [...ASSIGNABLE_ROLES]);
   if (error) return fail(500, `Couldn't list technicians: ${error.message}`);
   const wanted = new Set((techs ?? []).map((t: { id: string }) => t.id));
   const statuses: Record<string, unknown>[] = [];

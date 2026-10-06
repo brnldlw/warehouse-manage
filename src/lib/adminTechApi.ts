@@ -66,6 +66,19 @@ export const createTechnician = (input: CreateTechInput) => call<CreateTechResul
 export const resendTechInvite = (techId: string) =>
   call<{ email: string; inviteLinkSeconds: number }>({ action: 'resend', techId });
 
+export type AppRole = 'tech' | 'admin';
+
+/** Change someone's role. All the rules are enforced on the server (admin-create-tech, set_role). */
+export const setUserRole = (userId: string, role: AppRole) =>
+  call<{ name: string; from: string; to: AppRole; unchanged?: boolean }>({ action: 'set_role', userId, role })
+    .catch((err) => {
+      // An older copy of the function on the server doesn't know set_role yet.
+      if (err instanceof AdminTechError && err.message === 'Unknown action.') {
+        throw new AdminTechError('Changing roles needs the newer version of the technician service (admin-create-tech) on the server. See docs/ADMIN_CREATE_TECH.md → "Updating it".', 'outdated', true);
+      }
+      throw err;
+    });
+
 export const getTechSignInStatus = async (): Promise<TechSignInStatus[]> =>
   (await call<{ statuses: TechSignInStatus[] }>({ action: 'status' })).statuses;
 

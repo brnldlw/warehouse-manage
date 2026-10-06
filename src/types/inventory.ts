@@ -35,6 +35,8 @@ export interface InventoryItem {
   // Purchase info (migration 003; empty when the columns don't exist yet)
   poNumber?: string;
   purchaseDate?: string;
+  // Tool color ('red', 'blue', … or ''), once migration 004 has added the column
+  color?: string;
 }
 
 export interface User {

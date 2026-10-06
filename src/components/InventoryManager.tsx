@@ -29,6 +29,12 @@ import { describeConflict, findToolWithBarcode } from '@/lib/toolCodes';
 import { PO_NOT_ENABLED, isMissingPoColumnError, markPoColumnsMissing, usePoSupport } from '@/lib/poSupport';
 import { Checkbox } from '@/components/ui/checkbox';
 import { SetPoDialog } from './SetPoDialog';
+import { SetColorDialog } from './SetColorDialog';
+import { ColorSelect } from './ColorSelect';
+import { ColorDot } from './ColorDot';
+import { CompanyTotalsView } from './CompanyTotalsView';
+import { TotalsInput } from '@/lib/companyTotals';
+import { COLOR_NOT_ENABLED, COLOR_SHORT_NOTE, colorLabel, isMissingColorColumnError, markColorColumnMissing, useColorSupport } from '@/lib/toolColor';
 import { BulkMoveControls, BulkTool } from './moves/BulkMoveControls';
 import { loadVans } from '@/lib/vans';
 import { PrintPortal } from './print/PrintPortal';
@@ -84,11 +90,17 @@ export const InventoryManager: React.FC = () => {
     price: 0,
     poNumber: '',
     purchaseDate: '',
+    color: '',
     quantity: 1,
     image: null as File | null
   });
   const [loading, setLoading] = useState(false);
   const poSupported = usePoSupport();
+  const colorSupported = useColorSupport();
+  const [showSetColor, setShowSetColor] = useState(false);
+  const [filterColor, setFilterColor] = useState<string>('all');
+  // Admins only, with "All locations": one row per tool type across the company. Read-only.
+  const [totalsView, setTotalsView] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [showSetPo, setShowSetPo] = useState(false);
   const [editingItem, setEditingItem] = useState<InventoryItem | null>(null);
@@ -105,11 +117,14 @@ export const InventoryManager: React.FC = () => {
     image: null as File | null,
     poNumber: '',
     purchaseDate: '',
-    // Group edits: tools may have different POs/dates. Only overwrite what was actually changed.
+    color: '',
+    // Group edits: tools may have different POs/dates/colors. Only overwrite what was actually changed.
     poMixed: false,
     dateMixed: false,
+    colorMixed: false,
     poTouched: false,
     dateTouched: false,
+    colorTouched: false,
   });
   const [transferItem, setTransferItem] = useState<InventoryItem | null>(null);
   const [transferGroup, setTransferGroup] = useState<GroupedTool | null>(null);
@@ -230,7 +245,9 @@ export const InventoryManager: React.FC = () => {
         groupId: item.group_id,
         // Present only once migration 003 has run (select * returns whatever columns exist)
         poNumber: item.po_number ?? '',
-        purchaseDate: item.purchase_date ?? ''
+        purchaseDate: item.purchase_date ?? '',
+        // Present only once migration 004 has run
+        color: (item.color ?? '').toLowerCase()
       }));
 
       setItems(transformedItems);
@@ -324,6 +341,7 @@ export const InventoryManager: React.FC = () => {
       const poFields = poSupported
         ? { po_number: itemForm.poNumber.trim() || null, purchase_date: itemForm.purchaseDate || null }
         : {};
+      const colorFields = colorSupported ? { color: itemForm.color || null } : {};
 
       // Build array of items (all share same group_id)
       const itemsToInsert = Array.from({ length: qty }, (_, i) => ({
@@ -343,7 +361,8 @@ export const InventoryManager: React.FC = () => {
         location: itemForm.locationType === 'warehouse' ? 'Warehouse' : null,
         company_id: userProfile.company_id,
         group_id: groupId,
-        ...poFields
+        ...poFields,
+        ...colorFields
       }));
 
       const { data, error } = await supabase
@@ -356,6 +375,7 @@ export const InventoryManager: React.FC = () => {
 
       if (error) {
         if (isMissingPoColumnError(error)) { markPoColumnsMissing(); throw new Error(PO_NOT_ENABLED); }
+        if (isMissingColorColumnError(error)) { markColorColumnMissing(); throw new Error(COLOR_NOT_ENABLED); }
         throw error;
       }
 
@@ -414,7 +434,8 @@ export const InventoryManager: React.FC = () => {
         assignedTruckName: item.trucks?.name,
         groupId: item.group_id,
         poNumber: item.po_number ?? '',
-        purchaseDate: item.purchase_date ?? ''
+        purchaseDate: item.purchase_date ?? '',
+        color: (item.color ?? '').toLowerCase()
       }));
 
       setItems(prev => [...newItems, ...prev]);
@@ -430,6 +451,7 @@ export const InventoryManager: React.FC = () => {
         price: 0,
         poNumber: '',
         purchaseDate: '',
+        color: '',
         quantity: 1,
         image: null
       });
@@ -633,6 +655,7 @@ export const InventoryManager: React.FC = () => {
     const unitsInEdit = group ? group.items : [item];
     const pos = [...new Set(unitsInEdit.map((i) => (i.poNumber || '').trim()))];
     const dates = [...new Set(unitsInEdit.map((i) => i.purchaseDate || ''))];
+    const colors = [...new Set(unitsInEdit.map((i) => i.color || ''))];
     setEditForm({
       name: item.name,
       description: item.description || '',
@@ -645,10 +668,13 @@ export const InventoryManager: React.FC = () => {
       image: null,
       poNumber: pos.length === 1 ? pos[0] : '',
       purchaseDate: dates.length === 1 ? dates[0] : '',
+      color: colors.length === 1 ? colors[0] : '',
       poMixed: pos.length > 1,
       dateMixed: dates.length > 1,
+      colorMixed: colors.length > 1,
       poTouched: false,
       dateTouched: false,
+      colorTouched: false,
     });
   };
 
@@ -693,6 +719,7 @@ export const InventoryManager: React.FC = () => {
           // PO/date: only written when changed, so tools with different POs keep their own
           ...(poSupported && editForm.poTouched ? { po_number: editForm.poNumber.trim() || null } : {}),
           ...(poSupported && editForm.dateTouched ? { purchase_date: editForm.purchaseDate || null } : {}),
+          ...(colorSupported && editForm.colorTouched ? { color: editForm.color || null } : {}),
         };
 
         // Update all existing items in the group
@@ -703,6 +730,7 @@ export const InventoryManager: React.FC = () => {
           .in('id', groupItemIds);
         if (updateError) {
           if (isMissingPoColumnError(updateError)) { markPoColumnsMissing(); throw new Error(PO_NOT_ENABLED); }
+          if (isMissingColorColumnError(updateError)) { markColorColumnMissing(); throw new Error(COLOR_NOT_ENABLED); }
           throw updateError;
         }
 
@@ -745,6 +773,7 @@ export const InventoryManager: React.FC = () => {
             // New copies get the group's PO/date when everyone shares one
             ...(poSupported && (!editForm.poMixed || editForm.poTouched) ? { po_number: editForm.poNumber.trim() || null } : {}),
             ...(poSupported && (!editForm.dateMixed || editForm.dateTouched) ? { purchase_date: editForm.purchaseDate || null } : {}),
+            ...(colorSupported && (!editForm.colorMixed || editForm.colorTouched) ? { color: editForm.color || null } : {}),
           }));
           const { error: insertError } = await supabase
             .from('inventory_items')
@@ -789,6 +818,7 @@ export const InventoryManager: React.FC = () => {
           condition: editForm.condition,
           unit_price: editForm.price,
           ...(poSupported ? { po_number: editForm.poNumber.trim() || null, purchase_date: editForm.purchaseDate || null } : {}),
+          ...(colorSupported ? { color: editForm.color || null } : {}),
         };
 
         const { error } = await supabase
@@ -797,6 +827,7 @@ export const InventoryManager: React.FC = () => {
           .eq('id', editingItem.id);
         if (error) {
           if (isMissingPoColumnError(error)) { markPoColumnsMissing(); throw new Error(PO_NOT_ENABLED); }
+          if (isMissingColorColumnError(error)) { markColorColumnMissing(); throw new Error(COLOR_NOT_ENABLED); }
           throw error;
         }
 
@@ -818,6 +849,7 @@ export const InventoryManager: React.FC = () => {
                 ...item, name: editForm.name, description: editForm.description, categoryId: editForm.categoryId, barcode: editForm.barcode,
                 serialNumber: editForm.serialNumber, condition: editForm.condition, price: editForm.price, image_url: imageUrl,
                 ...(poSupported ? { poNumber: editForm.poNumber.trim(), purchaseDate: editForm.purchaseDate } : {}),
+                ...(colorSupported ? { color: editForm.color } : {}),
               }
             : item
         ));
@@ -989,8 +1021,13 @@ export const InventoryManager: React.FC = () => {
         item.poNumber,
         getCategoryName(item.categoryId),
         item.locationType === 'warehouse' ? 'Warehouse' : item.assignedTruckName,
+        colorLabel(item.color),
       );
-      
+
+      const matchesColor =
+        filterColor === 'all' ||
+        (filterColor === 'none' ? !item.color : item.color === filterColor);
+
       const matchesLocation = 
         filterLocation === 'all' || 
         item.locationType === filterLocation;
@@ -1004,7 +1041,7 @@ export const InventoryManager: React.FC = () => {
         filterCategory === 'all' || 
         item.categoryId === filterCategory;
 
-      return matchesText && matchesLocation && matchesTruck && matchesCategory;
+      return matchesText && matchesLocation && matchesTruck && matchesCategory && matchesColor;
     })
     .sort((a, b) => {
       let comparison = 0;
@@ -1054,6 +1091,12 @@ export const InventoryManager: React.FC = () => {
     }
   };
 
+  // ---- Company totals (admins, "All locations" + "All vans" only). Category / color filters
+  // still narrow it; the search box filters its rows. Every other setting is kept untouched, so
+  // switching back shows the normal view exactly as it was. ----
+  const canShowTotals = isAdmin && filterLocation === 'all' && filterTruck === 'all';
+  const showTotals = canShowTotals && totalsView;
+
   // ---- Print / Export: exactly the filtered, sorted list on screen, one line per row shown ----
   const toReportItem = (item: InventoryItem): ReportItem => {
     const onTruck = item.locationType === 'truck' && !!item.assignedTruckId;
@@ -1072,8 +1115,24 @@ export const InventoryManager: React.FC = () => {
       groupId: item.groupId ?? null,
       poNumber: item.poNumber ?? '',
       purchaseDate: item.purchaseDate ?? '',
+      color: item.color ?? '',
+      imageUrl: item.image_url ?? null,
     };
   };
+
+  // Totals view input: van names with their plate, so two vans with the same name stay apart.
+  const filteredForTotals: TotalsInput[] = showTotals ? items
+    .filter((i) => (filterCategory === 'all' || i.categoryId === filterCategory)
+      && (filterColor === 'all' || (filterColor === 'none' ? !i.color : i.color === filterColor)))
+    .map((i) => {
+      const r = toReportItem(i);
+      const truck = r.locationKey !== WAREHOUSE ? trucks.find((t) => t.id === r.locationKey) : undefined;
+      return {
+        id: r.id, name: r.name, categoryId: r.categoryId, categoryName: r.categoryName, color: r.color ?? '',
+        locationKey: r.locationKey, unitPrice: r.unitPrice,
+        locationName: r.locationKey === WAREHOUSE ? 'Warehouse' : truck ? (truck.identifier ? `${truck.name} (${truck.identifier})` : truck.name) : r.locationName,
+      };
+    }) : [];
 
   const screenReportGroups = () =>
     groupRows(
@@ -1088,6 +1147,7 @@ export const InventoryManager: React.FC = () => {
       `Location: ${filterLocation === 'all' ? 'All' : filterLocation === 'warehouse' ? 'Warehouse' : 'On vans'}`,
       filterTruck !== 'all' && `Van: ${filterTruck === 'warehouse' ? 'Warehouse only' : trucks.find((t) => t.id === filterTruck)?.name ?? ''}`,
       `Category: ${filterCategory === 'all' ? 'All' : getCategoryName(filterCategory)}`,
+      filterColor !== 'all' && `Color: ${filterColor === 'none' ? 'No color' : colorLabel(filterColor)}`,
       `Sorted by: ${sortField} (${sortDirection === 'asc' ? 'A–Z' : 'Z–A'})`,
     ].filter(Boolean).join('  ·  ');
     return {
@@ -1101,8 +1161,8 @@ export const InventoryManager: React.FC = () => {
 
   const exportScreen = (format: 'csv' | 'xlsx') => {
     const name = exportFileName(companyName, 'tools-inventory', format);
-    if (format === 'csv') downloadCsv(name, exportColumnKeys(poSupported), screenReportGroups(), 'none');
-    else downloadXlsx(name, screenReportMeta(), exportColumnKeys(poSupported), screenReportGroups(), 'none');
+    if (format === 'csv') downloadCsv(name, exportColumnKeys(poSupported, colorSupported), screenReportGroups(), 'none');
+    else downloadXlsx(name, screenReportMeta(), exportColumnKeys(poSupported, colorSupported), screenReportGroups(), 'none');
   };
 
   const SortIcon = ({ field }: { field: typeof sortField }) => {
@@ -1128,6 +1188,8 @@ export const InventoryManager: React.FC = () => {
           Tools Inventory
         </h2>
         <div className="flex flex-wrap gap-2">
+          {/* Company totals has its own Print / CSV / Excel buttons. */}
+          {!showTotals && (<>
           <Button variant="outline" onClick={print} disabled={groupedTools.length === 0}>
             <Printer className="h-4 w-4 mr-2" />
             Print
@@ -1151,6 +1213,7 @@ export const InventoryManager: React.FC = () => {
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
+          </>)}
           {isAdmin && (
             <Button variant="outline" onClick={() => setShowMerge(true)}>
               <Merge className="h-4 w-4 mr-2" />
@@ -1249,6 +1312,14 @@ export const InventoryManager: React.FC = () => {
                   </SelectContent>
                 </Select>
               </div>
+              {colorSupported ? (
+                <div>
+                  <Label htmlFor="add-color">Color</Label>
+                  <ColorSelect id="add-color" value={itemForm.color} onChange={(v) => setItemForm(prev => ({ ...prev, color: v }))} />
+                </div>
+              ) : colorSupported === false ? (
+                <p className="text-sm text-amber-800 self-end">{COLOR_SHORT_NOTE}</p>
+              ) : null}
               <div>
                 <Label htmlFor="price">Price ($)</Label>
                 <Input
@@ -1483,6 +1554,20 @@ export const InventoryManager: React.FC = () => {
                   onChange={(e) => setEditForm(prev => ({ ...prev, price: parseFloat(e.target.value) || 0 }))}
                 />
               </div>
+              {colorSupported ? (
+                <div>
+                  <Label htmlFor="edit-color">Color</Label>
+                  <ColorSelect id="edit-color" value={editForm.color} onChange={(v) => setEditForm(prev => ({ ...prev, color: v, colorTouched: true }))} />
+                  {editForm.colorMixed && !editForm.colorTouched && (
+                    <p className="text-xs text-gray-700 mt-1">Tools in this group have different colors; leave as is to keep them.</p>
+                  )}
+                  {editingGroup && editingGroup.items.length > 1 && editForm.colorTouched && (
+                    <p className="text-xs text-blue-700 mt-1">Will be set on all {editingGroup.items.length} tools in this group</p>
+                  )}
+                </div>
+              ) : colorSupported === false ? (
+                <p className="text-sm text-amber-800 self-end">{COLOR_SHORT_NOTE}</p>
+              ) : null}
               {poSupported ? (
                 <>
                   <div>
@@ -1731,11 +1816,41 @@ export const InventoryManager: React.FC = () => {
                 ))}
               </SelectContent>
             </Select>
+            {colorSupported && (
+              <ColorSelect value={filterColor === 'none' ? '' : filterColor} onChange={(v) => setFilterColor(v || 'none')}
+                allOption={{ value: 'all', label: 'All Colors' }} className="w-full md:w-40" />
+            )}
           </div>
+          {canShowTotals && (
+            <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:items-center">
+              <div className="flex overflow-hidden rounded-md border-2 border-gray-800" role="radiogroup" aria-label="View">
+                {([[false, 'Normal view'], [true, 'Company totals']] as const).map(([v, label]) => (
+                  <button key={label} type="button" role="radio" aria-checked={totalsView === v} onClick={() => setTotalsView(v)}
+                    className={`h-14 flex-1 px-5 text-base font-medium sm:flex-none ${totalsView === v ? 'bg-gray-900 text-white' : 'bg-white text-gray-900'}`}>
+                    {label}
+                  </button>
+                ))}
+              </div>
+              <span className="text-sm text-gray-700">Company totals: every kind of tool counted across the warehouse and all vans (admins only, read-only).</span>
+            </div>
+          )}
         </CardContent>
       </Card>
 
-      {/* Tools List */}
+      {showTotals ? (
+        <CompanyTotalsView
+          items={filteredForTotals}
+          search={searchTerm}
+          colorSupported={colorSupported}
+          companyName={companyName}
+          printedBy={[userProfile?.first_name, userProfile?.last_name].filter(Boolean).join(' ') || userProfile?.email || ''}
+          filtersText={[
+            `Category: ${filterCategory === 'all' ? 'All' : getCategoryName(filterCategory)}`,
+            filterColor !== 'all' && `Color: ${filterColor === 'none' ? 'No color' : colorLabel(filterColor)}`,
+          ].filter(Boolean).join('  ·  ')}
+        />
+      ) : (
+      /* Tools List */
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center justify-between">
@@ -1755,6 +1870,9 @@ export const InventoryManager: React.FC = () => {
                 <Button variant="outline" className="h-14 border-2" onClick={() => setShowSetPo(true)} disabled={!poSupported}>
                   Set PO number
                 </Button>
+                {colorSupported && (
+                  <Button variant="outline" className="h-14 border-2" onClick={() => setShowSetColor(true)}>Set color</Button>
+                )}
               </BulkMoveControls>
             </div>
           )}
@@ -1762,10 +1880,13 @@ export const InventoryManager: React.FC = () => {
             <div className="flex flex-col sm:flex-row sm:items-center gap-3 rounded-md border-2 border-blue-700 bg-blue-50 p-3">
               <span className="text-base font-semibold">{selectedIds.size} tool{selectedIds.size === 1 ? '' : 's'} selected</span>
               <div className="flex flex-wrap gap-2">
-                <Button className="h-12 bg-blue-700 hover:bg-blue-800 text-white" onClick={() => setShowSetPo(true)} disabled={!poSupported}>
+                <Button className="h-14 bg-blue-700 hover:bg-blue-800 text-white" onClick={() => setShowSetPo(true)} disabled={!poSupported}>
                   Set PO number
                 </Button>
-                <Button variant="outline" className="h-12 border-2" onClick={() => setSelectedIds(new Set())}>Clear selection</Button>
+                {colorSupported && (
+                  <Button className="h-14 bg-blue-700 hover:bg-blue-800 text-white" onClick={() => setShowSetColor(true)}>Set color</Button>
+                )}
+                <Button variant="outline" className="h-14 border-2" onClick={() => setSelectedIds(new Set())}>Clear selection</Button>
               </div>
               {poSupported === false && <span className="text-sm text-amber-800">{PO_NOT_ENABLED}</span>}
             </div>
@@ -1867,7 +1988,10 @@ export const InventoryManager: React.FC = () => {
                                 isExpanded ? <ChevronUp className="h-4 w-4 text-gray-400 flex-shrink-0" /> : <ChevronDown className="h-4 w-4 text-gray-400 flex-shrink-0" />
                               )}
                               <div>
-                                <p className="font-medium">{group.name}</p>
+                                <p className="font-medium flex items-center gap-2">
+                                  {[...new Set(group.items.map((i) => i.color || ''))].filter(Boolean).map((c) => <ColorDot key={c} color={c} />)}
+                                  {group.name}
+                                </p>
                                 {group.quantity === 1 && group.items[0]?.barcode && (
                                   <p className="text-xs text-gray-500">BC: {group.items[0].barcode}</p>
                                 )}
@@ -1972,7 +2096,7 @@ export const InventoryManager: React.FC = () => {
                               </div>
                             </TableCell>
                             <TableCell>
-                              <p className="text-sm text-gray-800 pl-6">{unitLabel(item, idx)}</p>
+                              <p className="text-sm text-gray-800 pl-6 flex items-center gap-2"><ColorDot color={item.color} />{unitLabel(item, idx)}</p>
                             </TableCell>
                             <TableCell></TableCell>
                             <TableCell></TableCell>
@@ -2021,8 +2145,17 @@ export const InventoryManager: React.FC = () => {
           </div>
         </CardContent>
       </Card>
+      )}
         </>
       )}
+      <SetColorDialog
+        open={showSetColor}
+        onClose={() => setShowSetColor(false)}
+        tools={items.filter((i) => selectedIds.has(i.id))}
+        companyId={userProfile?.company_id}
+        userId={userProfile?.id}
+        onSaved={async () => { setShowSetColor(false); await loadItems(); }}
+      />
       <SetPoDialog
         open={showSetPo}
         onClose={() => setShowSetPo(false)}
@@ -2050,7 +2183,7 @@ export const InventoryManager: React.FC = () => {
             runningHeader={`${meta.companyName} — ${meta.title}`}
             runningHeaderRight={`Printed ${formatDateTime(meta.printedAt)}`}
           >
-            <InventoryReportDocument meta={meta} columns={exportColumnKeys(poSupported)} groups={screenReportGroups()} />
+            <InventoryReportDocument meta={meta} columns={exportColumnKeys(poSupported, colorSupported)} groups={screenReportGroups()} />
           </PrintPortal>
         );
       })()}

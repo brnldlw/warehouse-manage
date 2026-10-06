@@ -121,6 +121,82 @@ signed-in user whose RLS allows updating tools can move them (no role check).
 p_condition text, p_note text)` function (`security definer`, checks company + role, writes
 `tool_events`), and point `src/lib/toolMoves.ts` at it. The screens don't change.
 
+## 6. A tech can probably make themselves an admin from the browser — LIKELY (code evidence; confirm with check C)
+
+**In plain English:** the app's own code updates `user_profiles` straight from the browser, and it
+works in production, so the database lets a signed-in person update **their own** profile row.
+Database row rules (RLS) can only say *which rows* someone may change, not *which columns*. So
+unless something else blocks it, any signed-in tech can open the browser console and run
+```js
+supabase.from('user_profiles').update({ role: 'admin' }).eq('id', '<their own id>')
+```
+and become an admin. The same hole would let someone move themselves into **another company**
+(`company_id`), or switch themselves back to active after being deactivated (`status`, `is_active`).
+
+**Evidence:**
+- `src/components/auth/CompanySelector.tsx` updates the user's own `company_id` from the browser,
+  so self-updates of `user_profiles` are allowed.
+- `src/components/TechManagement.tsx` (Activate/Deactivate) updates *other people's* profiles from
+  the browser, so some rule also lets admins (or possibly anyone in the company) update others.
+- Nothing in `supabase/migrations/` protects the `role`, `company_id` or `status` columns, and
+  `DATABASE_SETUP.md` shows the original rule: `FOR UPDATE USING (auth.uid() = id)`, no check on
+  what the new values are.
+- Not confirmed against the live database: that needs check C below (read-only). Ask me to run it,
+  or paste it into Supabase → SQL Editor yourself.
+
+**What this batch already does:** role changes from the app now go through the server
+(admin-create-tech, `set_role`), with every rule checked there. That doesn't close the hole by
+itself, because the hole is the direct table update.
+
+**Proposed fix (a new migration, not applied):** a trigger that refuses changes to `role`,
+`company_id`, `status` and `is_active` unless they come from the server (service role) or, for
+`status`/`is_active` only, from an active admin of the same company. The one browser change
+still needed (a brand-new user picking their company once, while `company_id` is empty) stays
+allowed. The app's Activate/Deactivate button keeps working; role changes keep working through
+the Edge Function.
+```sql
+-- NOT APPLIED. Draft for review (would be 005_protect_profile_columns.sql).
+create or replace function public.protect_profile_columns()
+returns trigger language plpgsql security definer set search_path = public as $$
+declare me record;
+begin
+  if coalesce(auth.role(), '') = 'service_role' then return new; end if;  -- Edge Functions
+  select role, company_id, is_active, status into me from public.user_profiles where id = auth.uid();
+  if new.role is distinct from old.role then
+    raise exception 'Roles can only be changed by an admin in the app.' using errcode = '42501';
+  end if;
+  if new.company_id is distinct from old.company_id
+     and not (old.company_id is null and new.id = auth.uid()) then  -- first-time company pick only
+    raise exception 'The company can''t be changed.' using errcode = '42501';
+  end if;
+  if (new.status is distinct from old.status or new.is_active is distinct from old.is_active)
+     and not (me.role = 'admin' and me.company_id = old.company_id
+              and me.is_active is not false and coalesce(me.status, 'active') <> 'inactive'
+              and new.id <> auth.uid()) then
+    raise exception 'Only an admin can activate or deactivate people.' using errcode = '42501';
+  end if;
+  return new;
+end $$;
+create trigger protect_profile_columns before update on public.user_profiles
+  for each row execute function public.protect_profile_columns();
+-- Rollback:
+-- drop trigger if exists protect_profile_columns on public.user_profiles;
+-- drop function if exists public.protect_profile_columns();
+```
+Also needed with it: item 2 (profiles created by the database), because the browser's first-time
+profile **insert** could otherwise still choose `role = 'admin'`.
+
+## 7. super_admin (platform owner) — HOOK READY, NOT SWITCHED ON
+
+The role-change code in `supabase/functions/admin-create-tech/handler.ts` has a switch,
+`SUPER_ADMIN_CAN_SET_ROLES` (now `false`). When on, someone whose profile role is `super_admin`
+can change roles in **any** company by sending `companyId` with `set_role`; every other rule still
+applies (only tech/admin, never their own role, never the last active admin, logged in the target
+company's history with `changed_by_role: super_admin`).
+**Before switching it on:** item 6 must be applied (otherwise anyone could give themselves
+`super_admin`), the `user_profiles.role` values must allow `super_admin`, and the super admin
+needs a screen to pick the company. Then flip the switch and redeploy the function.
+
 ---
 
 ## Checks (read-only, to run in Supabase → SQL Editor or via `psql`)
@@ -141,4 +217,19 @@ B. Anything that already runs when a new auth user is created:
 select tgname, pg_get_triggerdef(t.oid) as definition
 from pg_trigger t
 where tgrelid = 'auth.users'::regclass and not tgisinternal;
+```
+
+C. Can people update their own role? (item 6) — the update rules on `user_profiles`, any column
+permissions, and any triggers already guarding it. If the UPDATE rule's `qual` is like
+`auth.uid() = id` with no `with_check` limiting `role`, and C2/C3 show nothing protecting `role`,
+the hole is confirmed.
+```sql
+-- C1: update rules
+select policyname, cmd, roles, qual, with_check
+from pg_policies where schemaname = 'public' and tablename = 'user_profiles' and cmd in ('UPDATE', 'ALL');
+-- C2: columns signed-in users may update (if `role` is listed, the permission allows changing it)
+select column_name from information_schema.column_privileges
+where table_schema = 'public' and table_name = 'user_profiles' and grantee = 'authenticated' and privilege_type = 'UPDATE';
+-- C3: triggers on user_profiles
+select tgname, pg_get_triggerdef(oid) from pg_trigger where tgrelid = 'public.user_profiles'::regclass and not tgisinternal;
 ```

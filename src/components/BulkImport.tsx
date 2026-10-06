@@ -14,6 +14,8 @@ import { uploadItemImage, validateImageFile } from '@/lib/imageUtils';
 import { useAuth } from '@/contexts/AuthContext';
 import { PO_NOT_ENABLED, parsePurchaseDate, usePoSupport } from '@/lib/poSupport';
 import { downloadTableCsv } from '@/lib/tableExport';
+import { COLOR_SHORT_NOTE, TOOL_COLORS, parseColor, useColorSupport } from '@/lib/toolColor';
+import { ColorDot } from '@/components/ColorDot';
 
 interface ImportItem {
   name: string;
@@ -28,9 +30,12 @@ interface ImportItem {
   po_number?: string;
   /** "YYYY-MM-DD" */
   purchase_date?: string;
+  /** 'red', 'blue', … */
+  color?: string;
 }
 
-const TEMPLATE_HEADERS = ['Name', 'Category', 'Quantity', 'Serial_Number', 'Description', 'Barcode', 'Condition', 'Unit_Price', 'PO_Number', 'Purchase_Date'];
+const TEMPLATE_HEADERS = ['Name', 'Category', 'Quantity', 'Serial_Number', 'Description', 'Barcode', 'Condition', 'Color', 'Unit_Price', 'PO_Number', 'Purchase_Date'];
+const COLUMN_LIST = 'Name, Category, Quantity, Serial_Number, Description, Barcode, Condition, Color, Unit_Price, PO_Number, Purchase_Date';
 
 
 
@@ -50,11 +55,12 @@ export const BulkImport: React.FC<BulkImportProps> = ({ categories, onImportComp
 
   // Required and optional headers for validation
   const REQUIRED_HEADERS = ['name', 'category'];
-  const VALID_HEADERS = ['name', 'category', 'serial_number', 'description', 'barcode', 'condition', 'unit_price', 'quantity', 'po_number', 'purchase_date'];
+  const VALID_HEADERS = ['name', 'category', 'serial_number', 'description', 'barcode', 'condition', 'color', 'unit_price', 'quantity', 'po_number', 'purchase_date'];
   const poSupported = usePoSupport();
+  const colorSupported = useColorSupport();
 
   const downloadTemplate = () => {
-    const example = ['Cordless Drill', categories[0]?.name ?? 'Power Tools', '2', '', '', '', 'good', '149.99', 'PO-1042', '9/28/2026'];
+    const example = ['Cordless Drill', categories[0]?.name ?? 'Power Tools', '2', '', '', '', 'good', 'Red', '149.99', 'PO-1042', '9/28/2026'];
     downloadTableCsv('tool-import-template.csv',
       TEMPLATE_HEADERS.map((h) => ({ key: h, label: h })),
       [Object.fromEntries(TEMPLATE_HEADERS.map((h, i) => [h, example[i]]))]);
@@ -89,7 +95,7 @@ Please update your file to remove Quantity, Min_Quantity, and Location columns, 
         error: `Missing required columns: "${missingRequired.join(', ')}". 
 
 Required columns: Name, Category
-Optional columns: Quantity, Serial_Number, Description, Barcode, Condition, Unit_Price, PO_Number, Purchase_Date`
+Optional columns: Quantity, Serial_Number, Description, Barcode, Condition, Color, Unit_Price, PO_Number, Purchase_Date`
       };
     }
 
@@ -100,7 +106,7 @@ Optional columns: Quantity, Serial_Number, Description, Barcode, Condition, Unit
         valid: false,
         error: `Unrecognized columns found: "${unrecognizedHeaders.join(', ')}". 
 
-Valid columns are: Name, Category, Quantity, Serial_Number, Description, Barcode, Condition, Unit_Price, PO_Number, Purchase_Date`
+Valid columns are: ${COLUMN_LIST}`
       };
     }
 
@@ -170,8 +176,14 @@ Valid columns are: Name, Category, Quantity, Serial_Number, Description, Barcode
         return;
       }
       const poNumber = getRowValue(row, 'po_number')?.toString().trim() || undefined;
+      const color = parseColor(getRowValue(row, 'color'));
+      if (color === 'invalid') {
+        errors.push(`Row ${index + 1}: Color "${getRowValue(row, 'color')}" isn't one of: ${TOOL_COLORS.map((c) => c.label).join(', ')} (or leave it empty).`);
+        return;
+      }
 
       validItems.push({
+        color: color ?? undefined,
         po_number: poNumber,
         purchase_date: purchaseDate ?? undefined,
         name: name.toString().trim(),
@@ -288,6 +300,7 @@ Valid columns are: Name, Category, Quantity, Serial_Number, Description, Barcode
             group_id: groupId,
             // Every tool in the row gets the row's PO (only once the database has the columns)
             ...(poSupported ? { po_number: item.po_number || null, purchase_date: item.purchase_date || null } : {}),
+            ...(colorSupported ? { color: item.color || null } : {}),
           });
         }
       });
@@ -410,7 +423,7 @@ Valid columns are: Name, Category, Quantity, Serial_Number, Description, Barcode
             <AlertDescription>
               <p className="mb-2">Upload a CSV or Excel file with the following columns:</p>
               <div className="bg-gray-100 p-3 rounded-md font-mono text-sm mb-2">
-                Name, Category, Quantity, Serial_Number, Description, Barcode, Condition, Unit_Price, PO_Number, Purchase_Date
+                {COLUMN_LIST}
               </div>
               <Button type="button" variant="outline" className="h-11 border-2 mb-2" onClick={downloadTemplate}>
                 Download template (CSV)
@@ -422,12 +435,14 @@ Valid columns are: Name, Category, Quantity, Serial_Number, Description, Barcode
                 <li><strong>Serial_Number</strong> (optional) - Only used when quantity is 1</li>
                 <li><strong>Barcode</strong> (optional) - Only used when quantity is 1</li>
                 <li><strong>Condition</strong> (optional) - good, fair, poor, or damaged (defaults to "good")</li>
+                <li><strong>Color</strong> (optional) - {TOOL_COLORS.map((c) => c.label).join(', ')}; every tool in the row gets it</li>
                 <li><strong>Unit_Price</strong> (optional) - Price in dollars</li>
                 <li><strong>Description</strong> (optional)</li>
                 <li><strong>PO_Number</strong> (optional) - Purchase order number; every tool in the row gets it</li>
                 <li><strong>Purchase_Date</strong> (optional) - e.g. 9/28/2026 or 2026-09-28</li>
               </ul>
               {poSupported === false && <p className="mt-2 text-sm font-medium text-amber-800">{PO_NOT_ENABLED} PO_Number and Purchase_Date will be skipped until then.</p>}
+              {colorSupported === false && <p className="mt-2 text-sm font-medium text-amber-800">{COLOR_SHORT_NOTE} The Color column will be skipped until then.</p>}
               <p className="mt-3 text-sm text-blue-600 font-medium">💡 Use Quantity to add multiple identical tools at once (e.g., 60 ladders). They'll be grouped for easy management.</p>
               <p className="mt-2 text-sm text-gray-600">Note: All imported tools will be placed in the Warehouse. Serial # and barcode are ignored when quantity &gt; 1.</p>
             </AlertDescription>
@@ -491,7 +506,7 @@ Valid columns are: Name, Category, Quantity, Serial_Number, Description, Barcode
                   <TableBody>
                     {importData.slice(0, 10).map((item, index) => (
                       <TableRow key={index}>
-                        <TableCell className="font-medium">{item.name}</TableCell>
+                        <TableCell className="font-medium"><span className="flex items-center gap-2"><ColorDot color={item.color} />{item.name}</span></TableCell>
                         <TableCell>
                           <Badge variant="outline">
                             {getCategoryName(item.category_id)}
