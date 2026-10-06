@@ -61,8 +61,9 @@ const PROFILE_FIELDS = ['first_name', 'last_name', 'phone', 'specialty', 'compan
 
 /**
  * Load the user's profile. If there is none yet but they signed up through the app,
- * create it from what they entered at sign-up. Self sign-up always creates a 'tech'
- * (same as before); only an admin can change roles.
+ * create it from what they entered at sign-up. Self sign-up always creates an active 'tech'
+ * (the database forces this too, migration 005); only an admin can change roles, through the
+ * admin-create-tech server function.
  */
 async function fetchOrCreateProfile(user: User): Promise<{ profile: UserProfile | null; error: unknown }> {
   const first = await supabase.from('user_profiles').select('*').eq('id', user.id).maybeSingle();

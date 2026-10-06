@@ -121,7 +121,7 @@ signed-in user whose RLS allows updating tools can move them (no role check).
 p_condition text, p_note text)` function (`security definer`, checks company + role, writes
 `tool_events`), and point `src/lib/toolMoves.ts` at it. The screens don't change.
 
-## 6. A tech can probably make themselves an admin from the browser — LIKELY (code evidence; confirm with check C)
+## 6. A tech can probably make themselves an admin from the browser — FIX READY (005, not yet run)
 
 **In plain English:** the app's own code updates `user_profiles` straight from the browser, and it
 works in production, so the database lets a signed-in person update **their own** profile row.
@@ -148,43 +148,25 @@ and become an admin. The same hole would let someone move themselves into **anot
 (admin-create-tech, `set_role`), with every rule checked there. That doesn't close the hole by
 itself, because the hole is the direct table update.
 
-**Proposed fix (a new migration, not applied):** a trigger that refuses changes to `role`,
-`company_id`, `status` and `is_active` unless they come from the server (service role) or, for
-`status`/`is_active` only, from an active admin of the same company. The one browser change
-still needed (a brand-new user picking their company once, while `company_id` is empty) stays
-allowed. The app's Activate/Deactivate button keeps working; role changes keep working through
-the Edge Function.
-```sql
--- NOT APPLIED. Draft for review (would be 005_protect_profile_columns.sql).
-create or replace function public.protect_profile_columns()
-returns trigger language plpgsql security definer set search_path = public as $$
-declare me record;
-begin
-  if coalesce(auth.role(), '') = 'service_role' then return new; end if;  -- Edge Functions
-  select role, company_id, is_active, status into me from public.user_profiles where id = auth.uid();
-  if new.role is distinct from old.role then
-    raise exception 'Roles can only be changed by an admin in the app.' using errcode = '42501';
-  end if;
-  if new.company_id is distinct from old.company_id
-     and not (old.company_id is null and new.id = auth.uid()) then  -- first-time company pick only
-    raise exception 'The company can''t be changed.' using errcode = '42501';
-  end if;
-  if (new.status is distinct from old.status or new.is_active is distinct from old.is_active)
-     and not (me.role = 'admin' and me.company_id = old.company_id
-              and me.is_active is not false and coalesce(me.status, 'active') <> 'inactive'
-              and new.id <> auth.uid()) then
-    raise exception 'Only an admin can activate or deactivate people.' using errcode = '42501';
-  end if;
-  return new;
-end $$;
-create trigger protect_profile_columns before update on public.user_profiles
-  for each row execute function public.protect_profile_columns();
--- Rollback:
--- drop trigger if exists protect_profile_columns on public.user_profiles;
--- drop function if exists public.protect_profile_columns();
-```
-Also needed with it: item 2 (profiles created by the database), because the browser's first-time
-profile **insert** could otherwise still choose `role = 'admin'`.
+**Fix: `supabase/migrations/005_protect_profiles.sql` — WRITTEN AND TESTED, NOT YET RUN on Supabase.**
+Two triggers on `user_profiles` (branch `security-profiles`):
+- **Before update:** `role`, `company_id` (and `super_admin`, if that column ever exists) can only be
+  changed by the server (Edge Functions with the service role key) or the SQL editor — never from
+  the browser, not even by admins (roles go through admin-create-tech → `set_role`).
+  `is_active` / `status` can also be changed by an **active admin of the same company**, on
+  someone other than themselves (the Technicians Activate/Deactivate button).
+- **Before insert:** a profile created from the browser (a tech's first sign-in) is always
+  `role = 'tech'`, active, whatever was sent.
+- Plain-English refusals, e.g. "Roles can only be changed by an admin from the Technicians page."
+- No existing data is changed; one-step rollback at the bottom of the file.
+- Tested on a local in-memory PostgreSQL 17 (PGlite) with deliberately weak row rules, so the
+  triggers alone had to block everything: 28/28 cases.
+- App changes on the same branch: the unused `CompanySelector` (which set your own company) was
+  removed; Activate/Deactivate is shown to admins only.
+
+**Still open after 005:** the browser can still *insert* a brand-new profile with any
+`company_id` (it will always be an active tech). Closing that is item 2 (profiles created by the
+database at sign-up).
 
 ## 7. super_admin (platform owner) — HOOK READY, NOT SWITCHED ON
 
