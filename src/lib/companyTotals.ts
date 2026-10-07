@@ -6,7 +6,7 @@ import * as XLSX from 'xlsx';
 import { normalizeName } from '@/lib/toolMerge';
 import { colorLabel } from '@/lib/toolColor';
 import {
-  MONEY_FORMAT, ReportMeta, WAREHOUSE, downloadBlob, formatDateTime, formatMoney, freezeTopRow, safeText,
+  MONEY_FORMAT, ReportMeta, downloadBlob, isWarehouseKey, formatDateTime, formatMoney, freezeTopRow, safeText,
 } from '@/lib/inventoryReport';
 
 export interface TotalsInput {
@@ -15,7 +15,7 @@ export interface TotalsInput {
   categoryId: string | null;
   categoryName: string;
   color: string;
-  /** WAREHOUSE or a truck id. */
+  /** Where it is now: a warehouse key (see isWarehouseKey) or a truck id. */
   locationKey: string;
   locationName: string;
   unitPrice: number | null;
@@ -71,7 +71,8 @@ export function buildCompanyTotals(items: TotalsInput[]): ToolTypeTotal[] {
     }
     const prices = list.map((i) => i.unitPrice).filter((p): p is number => p !== null && Number.isFinite(p));
     const colors = [...new Set(list.map((i) => i.color || ''))];
-    const warehouse = locs.get(WAREHOUSE)?.count ?? 0;
+    // Each warehouse is its own location line; "in warehouses" adds them all up.
+    const warehouse = [...locs.values()].filter((l) => isWarehouseKey(l.key)).reduce((n, l) => n + l.count, 0);
     return {
       key,
       // The spelling most of the tools use ("Cordless Drill", not "cordless  drill").
@@ -83,7 +84,7 @@ export function buildCompanyTotals(items: TotalsInput[]): ToolTypeTotal[] {
       total: list.length,
       warehouse,
       vans: list.length - warehouse,
-      locations: [...locs.values()].sort((a, b) => Number(a.key !== WAREHOUSE) - Number(b.key !== WAREHOUSE) || cmpText(a.label, b.label)),
+      locations: [...locs.values()].sort((a, b) => Number(!isWarehouseKey(a.key)) - Number(!isWarehouseKey(b.key)) || cmpText(a.label, b.label)),
       avgPrice: prices.length ? prices.reduce((a, b) => a + b, 0) / prices.length : null,
       totalValue: prices.reduce((a, b) => a + b, 0),
       unpriced: list.length - prices.length,

@@ -6,7 +6,8 @@ import tseslint from "typescript-eslint";
 
 export default tseslint.config(
   // supabase/functions is Deno server code, not part of the browser app.
-  { ignores: ["dist", "supabase/functions"] },
+  // legacy-functions: read-only downloaded copies of old Supabase functions (git-ignored, not app code)
+  { ignores: ["dist", "supabase/functions", "legacy-functions"] },
   {
     extends: [js.configs.recommended, ...tseslint.configs.recommended],
     files: ["**/*.{ts,tsx}"],

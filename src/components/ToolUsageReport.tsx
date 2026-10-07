@@ -16,6 +16,8 @@ import { matchesSearch } from '@/lib/search';
 import { ReportData, ReportMeta, exportFileName, formatDateTime, loadReportData } from '@/lib/inventoryReport';
 import { TableColumn, downloadTableCsv, downloadTableXlsx } from '@/lib/tableExport';
 import { TransferLog, buildUsage, loadTransferLogs, techText, toOutEvents } from '@/lib/toolUsage';
+import { normalizeName } from '@/lib/toolMerge';
+import { warehouseLabel } from '@/lib/warehouses';
 
 type Period = '30' | '90' | '365' | 'custom';
 
@@ -38,6 +40,7 @@ export const ToolUsageReport: React.FC = () => {
   const [category, setCategory] = useState('all');
   const [search, setSearch] = useState('');
   const [threshold, setThreshold] = useState(3);
+  const [warehouse, setWarehouse] = useState('all');
 
   const range = useMemo(() => {
     if (period === 'custom') {
@@ -76,8 +79,19 @@ export const ToolUsageReport: React.FC = () => {
 
   const usage = useMemo(() => {
     if (!base || !logs) return null;
-    return buildUsage(toOutEvents(logs, base.trucks), base.items, base.truckTechs, threshold);
-  }, [base, logs, threshold]);
+    let events = toOutEvents(logs, base.trucks);
+    let inventory = base.items;
+    if (warehouse !== 'all') {
+      // Only tools whose HOME is this warehouse. History rows without a tool id (old group
+      // transfers) are matched by tool name.
+      inventory = base.items.filter((i) => i.homeWarehouseId === warehouse);
+      const ids = new Set(inventory.map((i) => i.id));
+      const names = new Set(inventory.map((i) => normalizeName(i.name)));
+      events = events.filter((e) => (e.itemIds.length ? e.itemIds.some((id) => ids.has(id)) : names.has(e.toolKey)));
+    }
+    return buildUsage(events, inventory, base.truckTechs, threshold);
+  }, [base, logs, threshold, warehouse]);
+  const warehouseName = base?.warehouses.find((w) => w.id === warehouse)?.name;
 
   const categories = useMemo(() => [...new Set((usage?.tools ?? []).map((t) => t.category))].sort(), [usage]);
   const tools = (usage?.tools ?? []).filter((t) =>
@@ -91,7 +105,7 @@ export const ToolUsageReport: React.FC = () => {
   const meta: ReportMeta = {
     companyName: base?.companyName ?? '',
     title: 'Tool Usage Report',
-    filtersText: [periodText, `Category: ${category === 'all' ? 'All' : category}`, search.trim() && `Search: "${search.trim()}"`, `"Buy one?" at ${threshold}+ times`].filter(Boolean).join('  ·  '),
+    filtersText: [periodText, `Category: ${category === 'all' ? 'All' : category}`, warehouseName && `Home warehouse: ${warehouseName}`, search.trim() && `Search: "${search.trim()}"`, `"Buy one?" at ${threshold}+ times`].filter(Boolean).join('  ·  '),
     printedBy,
     printedAt: new Date(),
   };
@@ -155,7 +169,7 @@ export const ToolUsageReport: React.FC = () => {
           </div>
         )}
 
-        <div className="grid grid-cols-1 md:grid-cols-[1fr_220px_160px] gap-3 items-start">
+        <div className={`grid grid-cols-1 gap-3 items-start ${base?.warehouses.length ? 'md:grid-cols-[1fr_220px_220px_160px]' : 'md:grid-cols-[1fr_220px_160px]'}`}>
           <SearchBox value={search} onChange={setSearch} placeholder="Search tool, van or tech…" shown={tools.length} total={usage?.tools.length ?? 0} noun="tools" />
           <Select value={category} onValueChange={setCategory}>
             <SelectTrigger className="h-12 text-base"><SelectValue /></SelectTrigger>
@@ -164,6 +178,15 @@ export const ToolUsageReport: React.FC = () => {
               {categories.map((c) => <SelectItem key={c} value={c} className="py-3 text-base">{c}</SelectItem>)}
             </SelectContent>
           </Select>
+          {!!base?.warehouses.length && (
+            <Select value={warehouse} onValueChange={setWarehouse}>
+              <SelectTrigger className="h-12 text-base" aria-label="Home warehouse"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all" className="py-3 text-base">All warehouses</SelectItem>
+                {base.warehouses.map((w) => <SelectItem key={w.id} value={w.id} className="py-3 text-base">{warehouseLabel(w)}</SelectItem>)}
+              </SelectContent>
+            </Select>
+          )}
           <div className="flex items-center gap-2">
             <Label htmlFor="tu-threshold" className="whitespace-nowrap">Flag at</Label>
             <Input id="tu-threshold" type="number" min={2} max={99} className="h-12 w-20 text-base" value={threshold}

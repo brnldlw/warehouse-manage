@@ -7,11 +7,13 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { AlertTriangle, Loader2 } from 'lucide-react';
 import { loadVans } from '@/lib/vans';
 import { truckLabel } from '@/lib/inventoryReport';
-import { ConditionChange, MoveResult, moveTools } from '@/lib/toolMoves';
+import { ConditionChange, Destination, MoveResult, moveTools } from '@/lib/toolMoves';
+import { useWarehouses } from '@/lib/warehouses';
 
 /** One tool in the confirmation list. */
-export interface BulkTool { id: string; name: string; serial: string; barcode: string; condition: string }
-export type BulkMode = 'return' | 'move';
+export interface BulkTool { id: string; name: string; serial: string; barcode: string; condition: string; home?: string }
+/** return = van -> warehouse; move = -> a van; warehouse = warehouse -> another warehouse. */
+export type BulkMode = 'return' | 'move' | 'warehouse';
 
 type Van = Awaited<ReturnType<typeof loadVans>>[number];
 
@@ -20,6 +22,7 @@ const CONDITIONS: { value: ConditionChange; label: string }[] = [
   { value: 'good', label: 'Good' },
   { value: 'damaged', label: 'Needs repair' },
 ];
+const HOME = 'home';
 const conditionText = (c: string) => (c === 'damaged' ? 'Needs repair / damaged' : c ? c[0].toUpperCase() + c.slice(1) : '—');
 
 interface Props {
@@ -29,7 +32,9 @@ interface Props {
   userId: string | undefined;
   /** The van they're on now (left out of the "move to" list). */
   fromTruckId?: string | null;
-  /** e.g. "Van 3 (Sam Smith)". */
+  /** The warehouse they're in now (mode 'warehouse'; left out of the list). */
+  fromWarehouseId?: string | null;
+  /** e.g. "Van 3 (Sam Smith)" or "North Shop". */
   fromLabel: string;
   /** Extra details saved on each history entry. */
   extraDetails?: Record<string, unknown>;
@@ -40,19 +45,24 @@ interface Props {
   onFinished: (result: MoveResult) => void;
 }
 
-/** "Return X tools from Van 3 (Sam) to the warehouse?" / "Move X tools to another van" confirmation. */
+/**
+ * "Return X tools from Van 3 (Sam) to the warehouse?" / "Move X tools to another van" /
+ * "Move X tools from North Shop to which warehouse?" confirmation.
+ */
 export const BulkMoveDialog: React.FC<Props> = ({
-  mode, tools, companyId, userId, fromTruckId, fromLabel, extraDetails, confirmLabel, onClose, onFinished,
+  mode, tools, companyId, userId, fromTruckId, fromWarehouseId, fromLabel, extraDetails, confirmLabel, onClose, onFinished,
 }) => {
   const [condition, setCondition] = useState<ConditionChange>('keep');
   const [note, setNote] = useState('');
   const [vans, setVans] = useState<Van[] | null>(null);
   const [vanError, setVanError] = useState('');
   const [toVanId, setToVanId] = useState('');
+  const [toWarehouse, setToWarehouse] = useState(mode === 'return' ? HOME : '');
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState({ done: 0, total: 0 });
   const [result, setResult] = useState<MoveResult | null>(null);
   const [error, setError] = useState('');
+  const wh = useWarehouses(companyId);
 
   useEffect(() => {
     if (mode !== 'move' || !companyId) return;
@@ -65,28 +75,38 @@ export const BulkMoveDialog: React.FC<Props> = ({
   const single = n === 1;
   const toVan = vans?.find((v) => v.id === toVanId);
   const failed = result?.failed ?? [];
+  const warehouseChoices = wh.active.filter((w) => w.id !== fromWarehouseId);
+  const pickedWarehouse = toWarehouse && toWarehouse !== HOME ? wh.byId.get(toWarehouse) : undefined;
+  const showHome = wh.enabled && tools.some((t) => t.home);
 
+  const where = mode === 'return'
+    ? (pickedWarehouse ? pickedWarehouse.name : wh.enabled ? (single ? 'its home warehouse' : 'their home warehouses') : 'the warehouse')
+    : '';
   const title = mode === 'return'
     ? (single ? 'Return tool to the warehouse' : `Return ${n} tools to the warehouse`)
-    : (single ? 'Move tool to another van' : `Move ${n} tools to another van`);
+    : mode === 'warehouse'
+      ? (single ? 'Move tool to another warehouse' : `Move ${n} tools to another warehouse`)
+      : (single ? 'Move tool to another van' : `Move ${n} tools to another van`);
+  const what = single ? tools[0]?.name : `${n} tools`;
   const question = mode === 'return'
-    ? (single ? `Return ${tools[0]?.name} from ${fromLabel} to the warehouse?` : `Return ${n} tools from ${fromLabel} to the warehouse?`)
-    : (single ? `Move ${tools[0]?.name} from ${fromLabel} to which van?` : `Move ${n} tools from ${fromLabel} to which van?`);
+    ? `Return ${what} from ${fromLabel} to ${where}?`
+    : `Move ${what} from ${fromLabel} to which ${mode === 'warehouse' ? 'warehouse' : 'van'}?`;
   const action = confirmLabel ?? (mode === 'return' ? (single ? 'Return tool' : `Return ${n} tools`) : (single ? 'Move tool' : `Move ${n} tools`));
+  const ready = mode === 'move' ? !!toVan : mode === 'warehouse' ? !!pickedWarehouse : true;
 
   const run = async () => {
     if (!companyId) return;
     if (mode === 'move' && !toVan) { setError('Choose the van to move them to.'); return; }
+    if (mode === 'warehouse' && !pickedWarehouse) { setError('Choose the warehouse to move them to.'); return; }
     setBusy(true);
     setError('');
     setResult(null);
+    const destination: Destination = mode === 'move'
+      ? { type: 'truck', truckId: toVan!.id, truckName: toVan!.name }
+      : pickedWarehouse ? { type: 'warehouse', warehouseId: pickedWarehouse.id, warehouseName: pickedWarehouse.name } : { type: 'warehouse' };
     try {
-      const r = await moveTools(
-        companyId, userId, tools.map((t) => t.id),
-        mode === 'return' ? { type: 'warehouse' } : { type: 'truck', truckId: toVan!.id, truckName: toVan!.name },
-        { condition, note, extraDetails },
-        (done, total) => setProgress({ done, total }),
-      );
+      const r = await moveTools(companyId, userId, tools.map((t) => t.id), destination, { condition, note, extraDetails },
+        (done, total) => setProgress({ done, total }));
       setResult(r);
       onFinished(r);
     } catch (e) {
@@ -142,18 +162,46 @@ export const BulkMoveDialog: React.FC<Props> = ({
           </div>
         )}
 
+        {(mode === 'warehouse' || (mode === 'return' && wh.enabled)) && !result && (
+          <div className="space-y-2">
+            <Label htmlFor="bulk-move-warehouse" className="text-base font-semibold">{mode === 'return' ? 'Return to' : 'Move to warehouse'}</Label>
+            {mode === 'warehouse' && warehouseChoices.length === 0 ? (
+              <p className="text-gray-700">There are no other active warehouses. Add one on the Warehouses page.</p>
+            ) : (
+              <Select value={toWarehouse} onValueChange={(v) => { setToWarehouse(v); setError(''); }} disabled={busy}>
+                <SelectTrigger id="bulk-move-warehouse" className="h-14 border-2 border-gray-800 text-base">
+                  <SelectValue placeholder="Choose a warehouse" />
+                </SelectTrigger>
+                <SelectContent>
+                  {mode === 'return' && (
+                    <SelectItem value={HOME} className="min-h-[48px] text-base">
+                      {single ? `Its home warehouse${tools[0]?.home ? ` (${tools[0].home})` : ''}` : "Each tool's own home warehouse"}
+                    </SelectItem>
+                  )}
+                  {warehouseChoices.map((w) => (
+                    <SelectItem key={w.id} value={w.id} className="min-h-[48px] text-base">{w.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            )}
+            {mode === 'return' && toWarehouse === HOME && <p className="text-sm text-gray-700">Each tool goes back to the warehouse it belongs to (shown under "Home").</p>}
+            {pickedWarehouse && mode === 'return' && <p className="text-sm text-gray-700">They'll be put in {pickedWarehouse.name}; their home warehouse doesn't change.</p>}
+          </div>
+        )}
+
         {!result && (
           <>
             <div className="overflow-x-auto rounded-md border">
               <table className="w-full text-sm">
                 <thead className="bg-gray-50 text-left">
-                  <tr><th className="p-2">Tool</th><th className="p-2">Serial / barcode</th><th className="p-2">Condition</th></tr>
+                  <tr><th className="p-2">Tool</th><th className="p-2">Serial / barcode</th>{showHome && <th className="p-2">Home</th>}<th className="p-2">Condition</th></tr>
                 </thead>
                 <tbody>
                   {tools.map((t) => (
                     <tr key={t.id} className="border-t">
                       <td className="p-2 font-medium">{t.name}</td>
                       <td className="p-2 font-mono">{[t.serial, t.barcode].filter(Boolean).join(' / ') || '—'}</td>
+                      {showHome && <td className="p-2">{t.home || '—'}</td>}
                       <td className="p-2">{conditionText(t.condition)}</td>
                     </tr>
                   ))}
@@ -200,7 +248,7 @@ export const BulkMoveDialog: React.FC<Props> = ({
             <>
               <Button variant="outline" className="h-14 border-2 px-6 text-base" onClick={onClose} disabled={busy}>Cancel</Button>
               <Button className="h-14 bg-blue-700 px-6 text-base text-white hover:bg-blue-800" onClick={run}
-                disabled={busy || !companyId || (mode === 'move' && !toVan)}>
+                disabled={busy || !companyId || !ready}>
                 {busy && <Loader2 className="mr-2 h-5 w-5 animate-spin" />}
                 {action}
               </Button>

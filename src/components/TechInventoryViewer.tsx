@@ -7,6 +7,7 @@ import { Badge } from '@/components/ui/badge';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Package, User, Search, Truck, Wrench, Image, AlertCircle } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
+import { warehousesAvailable } from '@/lib/warehouses';
 import { fetchAll } from '@/lib/fetchAll';
 import { matchesSearch } from '@/lib/search';
 import { SearchBox } from '@/components/SearchBox';
@@ -35,7 +36,16 @@ interface VanTool {
   image_url?: string;
   unit_price?: number;
   group_id?: string;
+  /** Home warehouse name (several warehouses, migration 006). */
+  warehouse?: string;
 }
+
+/** One inventory_items row as loaded here (home_wh only once migration 006 has run). */
+type VanToolRow = {
+  id: string; name: string; description?: string; serial_number?: string; barcode?: string;
+  condition?: 'good' | 'fair' | 'poor' | 'damaged'; category_id: string; image_url?: string; unit_price?: number; group_id?: string;
+  home_wh?: { name?: string } | null;
+};
 
 interface GroupedVanTool {
   groupId: string;
@@ -48,6 +58,7 @@ interface GroupedVanTool {
   items: VanTool[];
   quantity: number;
   totalValue: number;
+  warehouse?: string;
 }
 
 export const TechInventoryViewer: React.FC = () => {
@@ -133,15 +144,19 @@ export const TechInventoryViewer: React.FC = () => {
         return;
       }
 
+      // Each tool's home warehouse (migration 006), once the database has it.
+      const cols = 'id, name, description, serial_number, barcode, condition, category_id, image_url, unit_price, group_id'
+        + ((await warehousesAvailable()) ? ', home_wh:home_warehouse_id (name)' : '');
       // Get tools assigned to this tech's truck
-      const toolsData = await fetchAll(() => supabase
+      const toolsData = await fetchAll<VanToolRow>(() => supabase
         .from('inventory_items')
-        .select('id, name, description, serial_number, barcode, condition, category_id, image_url, unit_price, group_id')
+        .select(cols)
         .eq('company_id', userProfile.company_id)
         .eq('location_type', 'truck')
         .eq('assigned_truck_id', tech.truck_id)
         .order('name')
-        .order('id'));
+        .order('id')
+        .returns<VanToolRow[]>());
 
       // Get categories (best effort: tools still show without category names)
       const categoriesData: { id: string; name: string; color: string }[] = await fetchAll(() => supabase
@@ -167,7 +182,8 @@ export const TechInventoryViewer: React.FC = () => {
         category_color: categoryMap[tool.category_id]?.color || '#6B7280',
         image_url: tool.image_url,
         unit_price: tool.unit_price,
-        group_id: tool.group_id
+        group_id: tool.group_id,
+        warehouse: tool.home_wh?.name ?? ''
       }));
 
       setVanTools(transformedTools);
@@ -198,10 +214,13 @@ export const TechInventoryViewer: React.FC = () => {
   );
 
   // Group filtered tools by group_id
+  const showWarehouse = vanTools.some((t) => t.warehouse);
+
   const groupedTools: GroupedVanTool[] = (() => {
     const groups = new Map<string, GroupedVanTool>();
     for (const tool of filteredTools) {
-      const key = tool.group_id || tool.id;
+      // Same tool from two warehouses = two lines, each showing its own warehouse.
+      const key = `${tool.group_id || tool.id}|${tool.warehouse ?? ''}`;
       if (groups.has(key)) {
         const group = groups.get(key)!;
         group.items.push(tool);
@@ -216,6 +235,7 @@ export const TechInventoryViewer: React.FC = () => {
           category_name: tool.category_name,
           category_color: tool.category_color,
           image_url: tool.image_url,
+          warehouse: tool.warehouse,
           items: [tool],
           quantity: 1,
           totalValue: tool.unit_price || 0
@@ -361,6 +381,7 @@ export const TechInventoryViewer: React.FC = () => {
                         <TableHead>Tool</TableHead>
                         <TableHead className="text-center">Qty</TableHead>
                         <TableHead>Category</TableHead>
+                        {showWarehouse && <TableHead>Home warehouse</TableHead>}
                         <TableHead>Condition</TableHead>
                         <TableHead>Serial / Barcode</TableHead>
                         <TableHead className="text-right">Value</TableHead>
@@ -403,6 +424,7 @@ export const TechInventoryViewer: React.FC = () => {
                               {group.category_name}
                             </Badge>
                           </TableCell>
+                          {showWarehouse && <TableCell>{group.warehouse || '—'}</TableCell>}
                           <TableCell>
                             <Badge className={getConditionBadge(group.condition)}>
                               {group.condition.charAt(0).toUpperCase() + group.condition.slice(1)}

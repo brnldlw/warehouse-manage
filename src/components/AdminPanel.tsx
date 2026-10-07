@@ -20,6 +20,7 @@ import { RefrigerantTracker } from './RefrigerantTracker';
 import { ReportsPanel } from './ReportsPanel';
 import { CreateRequest } from './CreateRequest';
 import { PrintInventory } from './PrintInventory';
+import { WarehousesManager } from './WarehousesManager';
 import { supabase } from '@/lib/supabase';
 import { fetchAll } from '@/lib/fetchAll';
 export const AdminPanel: React.FC = () => {
@@ -124,6 +125,8 @@ export const AdminPanel: React.FC = () => {
         return <CategoryManager />;
       case 'print':
         return <PrintInventory />;
+      case 'warehouses':
+        return <WarehousesManager />;
       case 'create-request':
         return <CreateRequest />;
       case 'fulfill':

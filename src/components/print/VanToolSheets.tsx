@@ -27,6 +27,8 @@ export const VanToolSheets: React.FC<{ meta: ReportMeta; vans: VanSheet[] }> = (
     <div className="report-doc">
       {vans.map((van) => {
         const count = van.rows.reduce((n, r) => n + r.quantity, 0);
+        // A van can carry tools from several warehouses: show each tool's own.
+        const showWh = van.rows.some((r) => r.warehouse);
         return (
           <section key={van.id} className="report-sheet">
             <ReportHeader
@@ -48,6 +50,7 @@ export const VanToolSheets: React.FC<{ meta: ReportMeta; vans: VanSheet[] }> = (
                     <th className="check-col">OK</th>
                     <th>Tool</th>
                     <th>Category</th>
+                    {showWh && <th>Warehouse</th>}
                     <th>Serial #</th>
                     <th>Barcode</th>
                     <th>Condition</th>
@@ -60,6 +63,7 @@ export const VanToolSheets: React.FC<{ meta: ReportMeta; vans: VanSheet[] }> = (
                       <td className="check-col"><span className="check-box" /></td>
                       <td>{r.name}</td>
                       <td>{r.category}</td>
+                      {showWh && <td>{r.warehouse}</td>}
                       <td>{r.serial}</td>
                       <td>{r.barcode}</td>
                       <td>{r.condition}</td>

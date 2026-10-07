@@ -76,7 +76,7 @@ export const DeactivateTechDialog: React.FC<Props> = ({
     return (
       <BulkMoveDialog
         mode={sub}
-        tools={items.map((i) => ({ id: i.id, name: i.name, serial: i.serial, barcode: i.barcode, condition: i.condition }))}
+        tools={items.map((i) => ({ id: i.id, name: i.name, serial: i.serial, barcode: i.barcode, condition: i.condition, home: i.homeWarehouse }))}
         companyId={companyId}
         userId={userId}
         fromTruckId={truck.id}
