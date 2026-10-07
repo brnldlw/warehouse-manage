@@ -31,3 +31,6 @@ supabase/.temp/
 *.njsproj
 *.sln
 *.sw?
+
+# Read-only copies of old Supabase functions downloaded for review (not part of the app)
+legacy-functions/

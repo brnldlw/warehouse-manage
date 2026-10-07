@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -15,6 +15,9 @@ import { useAuth } from '@/contexts/AuthContext';
 import { PO_NOT_ENABLED, parsePurchaseDate, usePoSupport } from '@/lib/poSupport';
 import { downloadTableCsv } from '@/lib/tableExport';
 import { COLOR_SHORT_NOTE, TOOL_COLORS, parseColor, useColorSupport } from '@/lib/toolColor';
+import { getLastWarehouse, setLastWarehouse, useWarehouses } from '@/lib/warehouses';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Label } from '@/components/ui/label';
 import { ColorDot } from '@/components/ColorDot';
 
 interface ImportItem {
@@ -32,10 +35,12 @@ interface ImportItem {
   purchase_date?: string;
   /** 'red', 'blue', … */
   color?: string;
+  /** From the optional Warehouse column (matched by name); empty = the warehouse chosen above the file. */
+  warehouse_id?: string;
 }
 
-const TEMPLATE_HEADERS = ['Name', 'Category', 'Quantity', 'Serial_Number', 'Description', 'Barcode', 'Condition', 'Color', 'Unit_Price', 'PO_Number', 'Purchase_Date'];
-const COLUMN_LIST = 'Name, Category, Quantity, Serial_Number, Description, Barcode, Condition, Color, Unit_Price, PO_Number, Purchase_Date';
+const TEMPLATE_HEADERS = ['Name', 'Category', 'Quantity', 'Serial_Number', 'Description', 'Barcode', 'Condition', 'Color', 'Unit_Price', 'PO_Number', 'Purchase_Date', 'Warehouse'];
+const COLUMN_LIST = 'Name, Category, Quantity, Serial_Number, Description, Barcode, Condition, Color, Unit_Price, PO_Number, Purchase_Date, Warehouse';
 
 
 
@@ -55,12 +60,19 @@ export const BulkImport: React.FC<BulkImportProps> = ({ categories, onImportComp
 
   // Required and optional headers for validation
   const REQUIRED_HEADERS = ['name', 'category'];
-  const VALID_HEADERS = ['name', 'category', 'serial_number', 'description', 'barcode', 'condition', 'color', 'unit_price', 'quantity', 'po_number', 'purchase_date'];
+  const VALID_HEADERS = ['name', 'category', 'serial_number', 'description', 'barcode', 'condition', 'color', 'unit_price', 'quantity', 'po_number', 'purchase_date', 'warehouse'];
   const poSupported = usePoSupport();
   const colorSupported = useColorSupport();
+  // Several warehouses (migration 006): every imported tool needs a home warehouse.
+  const wh = useWarehouses(userProfile?.company_id);
+  const [warehouseId, setWarehouseId] = useState('');
+  useEffect(() => {
+    if (wh.enabled && !warehouseId) setWarehouseId(getLastWarehouse(userProfile?.company_id, wh.active));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [wh.enabled, wh.active]);
 
   const downloadTemplate = () => {
-    const example = ['Cordless Drill', categories[0]?.name ?? 'Power Tools', '2', '', '', '', 'good', 'Red', '149.99', 'PO-1042', '9/28/2026'];
+    const example = ['Cordless Drill', categories[0]?.name ?? 'Power Tools', '2', '', '', '', 'good', 'Red', '149.99', 'PO-1042', '9/28/2026', wh.active[0]?.name ?? ''];
     downloadTableCsv('tool-import-template.csv',
       TEMPLATE_HEADERS.map((h) => ({ key: h, label: h })),
       [Object.fromEntries(TEMPLATE_HEADERS.map((h, i) => [h, example[i]]))]);
@@ -182,7 +194,21 @@ Valid columns are: ${COLUMN_LIST}`
         return;
       }
 
+      // Optional Warehouse column: an active warehouse of this company, by name (capitals / spaces ignored).
+      const whText = (getRowValue(row, 'warehouse') ?? '').toString().trim();
+      let rowWarehouse: string | undefined;
+      if (whText && wh.enabled) {
+        const key = whText.replace(/\s+/g, ' ').toLowerCase();
+        const match = wh.warehouses.find((w) => w.name.replace(/\s+/g, ' ').toLowerCase() === key);
+        if (!match || !match.is_active) {
+          errors.push(`Row ${index + 1}: Warehouse "${whText}" ${match ? 'is inactive' : "doesn't exist"}. Use one of: ${wh.active.map((w) => w.name).join(', ')} (or leave it empty).`);
+          return;
+        }
+        rowWarehouse = match.id;
+      }
+
       validItems.push({
+        warehouse_id: rowWarehouse,
         color: color ?? undefined,
         po_number: poNumber,
         purchase_date: purchaseDate ?? undefined,
@@ -262,6 +288,11 @@ Valid columns are: ${COLUMN_LIST}`
   const importItems = async () => {
     if (importData.length === 0) return;
 
+    if (wh.enabled && !warehouseId && importData.some((i) => !i.warehouse_id)) {
+      toast({ title: "Error", description: "Choose the warehouse for these tools", variant: "destructive" });
+      return;
+    }
+
     if (!userProfile?.company_id) {
       toast({
         title: "Error",
@@ -301,6 +332,8 @@ Valid columns are: ${COLUMN_LIST}`
             // Every tool in the row gets the row's PO (only once the database has the columns)
             ...(poSupported ? { po_number: item.po_number || null, purchase_date: item.purchase_date || null } : {}),
             ...(colorSupported ? { color: item.color || null } : {}),
+            // Home warehouse (and it's in that warehouse): the row's, or the one chosen above the file.
+            ...(wh.enabled ? { home_warehouse_id: item.warehouse_id || warehouseId, current_warehouse_id: item.warehouse_id || warehouseId } : {}),
           });
         }
       });
@@ -370,6 +403,7 @@ Valid columns are: ${COLUMN_LIST}`
         description: `Successfully imported ${totalItems} items from ${importData.length} rows`,
       });
 
+      if (wh.enabled && warehouseId) setLastWarehouse(userProfile.company_id, warehouseId);
       setImportData([]);
       setErrors([]);
       onImportComplete();
@@ -410,6 +444,18 @@ Valid columns are: ${COLUMN_LIST}`
       </CardHeader>
       <CardContent className="space-y-4">
         <div className="space-y-4">
+          {wh.enabled && (
+            <div className="space-y-1.5 max-w-md">
+              <Label htmlFor="import-warehouse">Warehouse for these tools *</Label>
+              <Select value={warehouseId} onValueChange={setWarehouseId}>
+                <SelectTrigger id="import-warehouse" className="h-12 text-base"><SelectValue placeholder="Choose warehouse" /></SelectTrigger>
+                <SelectContent>
+                  {wh.active.map((w) => <SelectItem key={w.id} value={w.id} className="py-3 text-base">{w.name}</SelectItem>)}
+                </SelectContent>
+              </Select>
+              <p className="text-sm text-gray-700">Every imported tool belongs to (and starts in) this warehouse, unless its row has a Warehouse.</p>
+            </div>
+          )}
           <Input
             type="file"
             accept=".csv,.xlsx,.xls"
@@ -440,11 +486,12 @@ Valid columns are: ${COLUMN_LIST}`
                 <li><strong>Description</strong> (optional)</li>
                 <li><strong>PO_Number</strong> (optional) - Purchase order number; every tool in the row gets it</li>
                 <li><strong>Purchase_Date</strong> (optional) - e.g. 9/28/2026 or 2026-09-28</li>
+                {wh.enabled && <li><strong>Warehouse</strong> (optional) - one of: {wh.active.map((w) => w.name).join(', ')}. Empty = the warehouse chosen above.</li>}
               </ul>
               {poSupported === false && <p className="mt-2 text-sm font-medium text-amber-800">{PO_NOT_ENABLED} PO_Number and Purchase_Date will be skipped until then.</p>}
               {colorSupported === false && <p className="mt-2 text-sm font-medium text-amber-800">{COLOR_SHORT_NOTE} The Color column will be skipped until then.</p>}
               <p className="mt-3 text-sm text-blue-600 font-medium">💡 Use Quantity to add multiple identical tools at once (e.g., 60 ladders). They'll be grouped for easy management.</p>
-              <p className="mt-2 text-sm text-gray-600">Note: All imported tools will be placed in the Warehouse. Serial # and barcode are ignored when quantity &gt; 1.</p>
+              <p className="mt-2 text-sm text-gray-600">Note: All imported tools will be placed in {wh.enabled ? 'their warehouse' : 'the Warehouse'}. Serial # and barcode are ignored when quantity &gt; 1.</p>
             </AlertDescription>
           </Alert>
 
@@ -483,7 +530,7 @@ Valid columns are: ${COLUMN_LIST}`
                 </h3>
                 <Button
                   onClick={importItems}
-                  disabled={importing || errors.length > 0 || !!fileFormatError}
+                  disabled={importing || errors.length > 0 || !!fileFormatError || (wh.enabled && !warehouseId && importData.some((i) => !i.warehouse_id))}
                   className="w-full sm:w-auto"
                 >
                   {importing ? 'Importing...' : 'Import Items'}
@@ -499,6 +546,7 @@ Valid columns are: ${COLUMN_LIST}`
                       <TableHead className="text-center">Qty</TableHead>
                       <TableHead>Serial #</TableHead>
                       <TableHead>PO #</TableHead>
+                      {wh.enabled && <TableHead>Warehouse</TableHead>}
                       <TableHead>Condition</TableHead>
                       <TableHead>Image</TableHead>
                     </TableRow>
@@ -519,6 +567,7 @@ Valid columns are: ${COLUMN_LIST}`
                         </TableCell>
                         <TableCell className="font-mono text-sm">{item.serial_number || '-'}</TableCell>
                         <TableCell className="text-sm">{item.po_number || '-'}{item.purchase_date ? ` · ${item.purchase_date}` : ''}</TableCell>
+                        {wh.enabled && <TableCell className="text-sm">{wh.byId.get(item.warehouse_id || warehouseId)?.name ?? '—'}</TableCell>}
                         <TableCell>
                           <Badge className={
                             item.condition === 'good' ? 'bg-green-100 text-green-800' :

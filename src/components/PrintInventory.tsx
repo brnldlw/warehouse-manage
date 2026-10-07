@@ -11,7 +11,7 @@ import { PrintPortal } from '@/components/print/PrintPortal';
 import { InventoryReportDocument } from '@/components/print/InventoryReportDocument';
 import { VanSheet, VanToolSheets } from '@/components/print/VanToolSheets';
 import {
-  ALL_COLUMN_KEYS, COLOR_COLUMN_KEYS, COLUMNS, ColumnKey, DEFAULT_PRINT_COLUMN_KEYS, PO_COLUMN_KEYS, Detail, GroupBy, ReportData, ReportMeta, SortBy, WAREHOUSE,
+  ALL_COLUMN_KEYS, COLOR_COLUMN_KEYS, COLUMNS, ColumnKey, DEFAULT_PRINT_COLUMN_KEYS, PO_COLUMN_KEYS, WAREHOUSE_COLUMN_KEYS, Detail, GroupBy, ReportData, ReportMeta, SortBy, isWarehouseKey,
   buildRows, conditionLabel, downloadCsv, downloadXlsx, exportFileName, formatDateTime, groupRows, loadReportData,
   sortRows, truckLabel,
 } from '@/lib/inventoryReport';
@@ -20,6 +20,7 @@ import { SearchBox } from '@/components/SearchBox';
 import { matchesSearch } from '@/lib/search';
 import { usePoSupport } from '@/lib/poSupport';
 import { colorLabel, useColorSupport } from '@/lib/toolColor';
+import { warehouseLabel } from '@/lib/warehouses';
 
 type ReportType = 'list' | 'vanSheet';
 
@@ -56,7 +57,8 @@ export const PrintInventory: React.FC = () => {
   const [loading, setLoading] = useState(true);
 
   const [reportType, setReportType] = useState<ReportType>('list');
-  const [location, setLocation] = useState('all'); // all | warehouse | vans | <truck id>
+  const [location, setLocation] = useState('all'); // all | warehouse (any) | wh:<id> | vans | <truck id>
+  const [homeWarehouse, setHomeWarehouse] = useState('all'); // all | <warehouse id>
   const [category, setCategory] = useState('all');
   const [condition, setCondition] = useState('all');
   const [groupBy, setGroupBy] = useState<GroupBy>('location');
@@ -71,6 +73,15 @@ export const PrintInventory: React.FC = () => {
   const [search, setSearch] = useState('');
 
   const companyId = userProfile?.company_id;
+  const warehouses = data?.warehouses ?? [];
+  // Once warehouses exist, the Home Warehouse column is printed by default (it can be switched off).
+  const [warehouseColumnSet, setWarehouseColumnSet] = useState(false);
+  useEffect(() => {
+    if (warehouses.length && !warehouseColumnSet) {
+      setWarehouseColumnSet(true);
+      setColumns((prev) => (prev.includes('warehouse') ? prev : ALL_COLUMN_KEYS.filter((k) => k === 'warehouse' || prev.includes(k))));
+    }
+  }, [warehouses.length, warehouseColumnSet]);
 
   useEffect(() => {
     if (!companyId) return;
@@ -93,19 +104,21 @@ export const PrintInventory: React.FC = () => {
     if (!data) return [];
     const items = data.items.filter((i) =>
       (location === 'all' ||
-        (location === 'warehouse' && i.locationKey === WAREHOUSE) ||
-        (location === 'vans' && i.locationKey !== WAREHOUSE) ||
+        (location === 'warehouse' && isWarehouseKey(i.locationKey)) ||
+        (location === 'vans' && !isWarehouseKey(i.locationKey)) ||
         i.locationKey === location) &&
+      (homeWarehouse === 'all' || i.homeWarehouseId === homeWarehouse) &&
       (category === 'all' || (category === 'none' ? !i.categoryId : i.categoryId === category)) &&
       (condition === 'all' || i.condition === condition) &&
-      matchesSearch(search, i.name, i.serial, i.barcode, i.poNumber, i.categoryName, i.locationName, colorLabel(i.color)));
+      matchesSearch(search, i.name, i.serial, i.barcode, i.poNumber, i.categoryName, i.locationName, colorLabel(i.color), i.homeWarehouse));
     return groupRows(sortRows(buildRows(items, detail), sortBy), groupBy);
-  }, [data, location, category, condition, detail, sortBy, groupBy, search]);
+  }, [data, location, homeWarehouse, category, condition, detail, sortBy, groupBy, search]);
 
   const truckById = useMemo(() => new Map((data?.trucks ?? []).map((t) => [t.id, t])), [data]);
   const locationText =
     location === 'all' ? 'All locations'
-    : location === 'warehouse' ? 'Warehouse'
+    : location === 'warehouse' ? (warehouses.length ? 'All warehouses' : 'Warehouse')
+    : location.startsWith('wh:') ? warehouses.find((w) => `wh:${w.id}` === location)?.name ?? 'Warehouse'
     : location === 'vans' ? 'All vans'
     : truckById.get(location) ? truckLabel(truckById.get(location)!) : 'Van';
   const categoryText =
@@ -118,6 +131,7 @@ export const PrintInventory: React.FC = () => {
       ...(search.trim() ? [`Search: "${search.trim()}"`] : []),
       `Location: ${locationText}`,
       `Category: ${categoryText}`,
+      ...(homeWarehouse !== 'all' ? [`Home warehouse: ${warehouses.find((w) => w.id === homeWarehouse)?.name ?? ''}`] : []),
       `Condition: ${condition === 'all' ? 'All' : conditionLabel(condition)}`,
       `Grouped by: ${groupBy === 'none' ? 'None' : groupBy}`,
       `Sorted by: ${sortBy}`,
@@ -207,11 +221,18 @@ export const PrintInventory: React.FC = () => {
                 <Field label="Location">
                   <Choice value={location} onChange={setLocation} options={[
                     { value: 'all', label: 'All locations' },
-                    { value: 'warehouse', label: 'Warehouse' },
+                    { value: 'warehouse', label: warehouses.length ? 'All warehouses' : 'Warehouse' },
+                    ...warehouses.map((w) => ({ value: `wh:${w.id}`, label: `In ${warehouseLabel(w)}` })),
                     { value: 'vans', label: 'All vans' },
                     ...(data?.trucks ?? []).map((t) => ({ value: t.id, label: truckLabel(t) })),
                   ]} />
                 </Field>
+                {warehouses.length > 0 && (<Field label="Home warehouse">
+                  <Choice value={homeWarehouse} onChange={setHomeWarehouse} options={[
+                    { value: 'all', label: 'All home warehouses' },
+                    ...warehouses.map((w) => ({ value: w.id, label: warehouseLabel(w) })),
+                  ]} />
+                </Field>)}
                 <Field label="Category">
                   <Choice value={category} onChange={setCategory} options={[
                     { value: 'all', label: 'All categories' },
@@ -228,6 +249,7 @@ export const PrintInventory: React.FC = () => {
                 <Field label="Group by">
                   <Choice value={groupBy} onChange={(v) => setGroupBy(v as GroupBy)} options={[
                     { value: 'location', label: 'Location / van' },
+                    ...(warehouses.length ? [{ value: 'warehouse', label: 'Home warehouse' }] : []),
                     { value: 'category', label: 'Category' },
                     { value: 'none', label: 'No grouping' },
                   ]} />
@@ -265,7 +287,7 @@ export const PrintInventory: React.FC = () => {
           {isList && (
             <Field label="Columns">
               <div className="flex flex-wrap gap-x-6 gap-y-3 pt-1">
-                {COLUMNS.filter((c) => (poSupported || !PO_COLUMN_KEYS.includes(c.key)) && (colorSupported || !COLOR_COLUMN_KEYS.includes(c.key))).map((c) => (
+                {COLUMNS.filter((c) => (poSupported || !PO_COLUMN_KEYS.includes(c.key)) && (colorSupported || !COLOR_COLUMN_KEYS.includes(c.key)) && (warehouses.length > 0 || !WAREHOUSE_COLUMN_KEYS.includes(c.key))).map((c) => (
                   <label key={c.key} className="flex items-center gap-2 text-base cursor-pointer min-h-[44px]">
                     <Checkbox
                       className="h-6 w-6"

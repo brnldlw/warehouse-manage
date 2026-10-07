@@ -127,6 +127,7 @@ export function toOutEvents(logs: TransferLog[], trucks: TruckInfo[]): OutEvent[
   for (const log of logs) {
     if (log.action !== 'transferred' || isIgnoredApp(log)) continue;
     const d = log.details ?? {};
+    if (d.to_type === 'warehouse') continue; // back to (or between) warehouses, e.g. "North Shop"
     const toName = str(d.to);
     if (!toName || normalizeName(toName) === 'warehouse') continue;
     const toolName = str(d.item_name).trim() || 'Unnamed tool';

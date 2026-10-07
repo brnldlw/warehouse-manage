@@ -15,6 +15,7 @@ import { VanToolSheets } from '@/components/print/VanToolSheets';
 import { matchesSearch } from '@/lib/search';
 import { usePoSupport } from '@/lib/poSupport';
 import { useColorSupport } from '@/lib/toolColor';
+import { useWarehouseSupport } from '@/lib/warehouses';
 import { ColorDot } from '@/components/ColorDot';
 import {
   Detail, ReportItem, conditionLabel, exportColumnKeys, ReportMeta, TruckInfo, buildRows, cellText, downloadCsv, downloadXlsx,
@@ -41,7 +42,8 @@ export const VanToolsDialog: React.FC<VanToolsDialogProps> = ({ truck, techNames
   const poSupported = usePoSupport();
   // Every row is on this van, so no location column; PO columns once the database has them.
   const colorSupported = useColorSupport();
-  const EXPORT_COLUMNS = exportColumnKeys(poSupported, colorSupported).filter((k) => k !== 'location');
+  const whSupported = useWarehouseSupport();
+  const EXPORT_COLUMNS = exportColumnKeys(poSupported, colorSupported, whSupported).filter((k) => k !== 'location');
   const [items, setItems] = useState<ReportItem[]>([]);
   const [companyName, setCompanyName] = useState('');
   const [loading, setLoading] = useState(false);
@@ -85,7 +87,7 @@ export const VanToolsDialog: React.FC<VanToolsDialogProps> = ({ truck, techNames
 
   const allRows = useMemo(() => sortRows(buildRows(items, detail), 'name'), [items, detail]);
   const shownRows = useMemo(
-    () => allRows.filter((r) => matchesSearch(search, r.name, r.category, r.serial, r.barcode, r.poNumber, r.condition, r.color)),
+    () => allRows.filter((r) => matchesSearch(search, r.name, r.category, r.serial, r.barcode, r.poNumber, r.condition, r.color, r.warehouse)),
     [allRows, search],
   );
   const toolCount = (rows: typeof allRows) => rows.reduce((n, r) => n + r.quantity, 0);
@@ -104,13 +106,15 @@ export const VanToolsDialog: React.FC<VanToolsDialogProps> = ({ truck, techNames
     return next;
   });
   const selectedTools: BulkTool[] = items.filter((i) => selected.has(i.id))
-    .map((i) => ({ id: i.id, name: i.name, serial: i.serial, barcode: i.barcode, condition: i.condition }));
+    .map((i) => ({ id: i.id, name: i.name, serial: i.serial, barcode: i.barcode, condition: i.condition, home: i.homeWarehouse }));
 
   if (!truck) return null;
 
   const label = truckLabel(truck);
   const fromLabel = techNames.length ? `${truck.name} (${techNames.join(', ')})` : truck.name;
-  const colCount = (poSupported ? 10 : 9) + 1;
+  // Each tool's own home warehouse (a van can carry tools from several warehouses).
+  const showWh = items.some((i) => i.homeWarehouseId);
+  const colCount = (poSupported ? 10 : 9) + 1 + (showWh ? 1 : 0);
   const printedBy = [userProfile?.first_name, userProfile?.last_name].filter(Boolean).join(' ') || userProfile?.email || '';
   const meta: ReportMeta = { companyName, title: 'Van Tool Sheet', filtersText: '', printedBy, printedAt: new Date() };
   const fileBase = `van-${truck.name}`;
@@ -191,6 +195,7 @@ export const VanToolsDialog: React.FC<VanToolsDialogProps> = ({ truck, techNames
                       <TableHead className="w-14">Photo</TableHead>
                       <TableHead>Name</TableHead>
                       <TableHead>Category</TableHead>
+                      {showWh && <TableHead>Home warehouse</TableHead>}
                       <TableHead>Serial #</TableHead>
                       <TableHead>Barcode</TableHead>
                       {poSupported && <TableHead>PO #</TableHead>}
@@ -229,6 +234,7 @@ export const VanToolsDialog: React.FC<VanToolsDialogProps> = ({ truck, techNames
                           ) : <span className="flex items-center gap-2"><ColorDot color={r.colorValue} />{r.name}</span>}
                         </TableCell>
                         <TableCell>{r.category}</TableCell>
+                        {showWh && <TableCell>{r.warehouse || '—'}</TableCell>}
                         <TableCell className="font-mono text-sm">{r.serial}</TableCell>
                         <TableCell className="font-mono text-sm">{r.barcode}</TableCell>
                         {poSupported && <TableCell className="text-sm">{r.poNumber}</TableCell>}
@@ -248,6 +254,7 @@ export const VanToolsDialog: React.FC<VanToolsDialogProps> = ({ truck, techNames
                             <TableCell className="text-sm text-gray-600 text-center">#{idx + 1}</TableCell>
                             <TableCell className="pl-8 text-sm"><span className="flex items-center gap-2"><ColorDot color={u.color} />{u.name}</span></TableCell>
                             <TableCell />
+                            {showWh && <TableCell className="text-sm">{u.homeWarehouse || '—'}</TableCell>}
                             <TableCell className="font-mono text-sm">{u.serial}</TableCell>
                             <TableCell className="font-mono text-sm">{u.barcode}</TableCell>
                             {poSupported && <TableCell className="text-sm">{u.poNumber}</TableCell>}
@@ -263,7 +270,7 @@ export const VanToolsDialog: React.FC<VanToolsDialogProps> = ({ truck, techNames
                     })}
                     {shownRows.length > 0 && (
                       <TableRow className="font-bold border-t-2 border-gray-800">
-                        <TableCell colSpan={poSupported ? 8 : 7}>{search ? 'Total (search results)' : 'Total'}</TableCell>
+                        <TableCell colSpan={(poSupported ? 8 : 7) + (showWh ? 1 : 0)}>{search ? 'Total (search results)' : 'Total'}</TableCell>
                         <TableCell className="text-right">{toolCount(shownRows)}</TableCell>
                         <TableCell />
                         <TableCell className="text-right whitespace-nowrap">{formatMoney(toolValue(shownRows))}</TableCell>

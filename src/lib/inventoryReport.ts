@@ -7,12 +7,13 @@ import { supabase } from '@/lib/supabase';
 import { fetchAll } from '@/lib/fetchAll';
 import { formatPurchaseDate, poColumnsAvailable } from '@/lib/poSupport';
 import { colorColumnAvailable, colorLabel } from '@/lib/toolColor';
+import { Warehouse, loadWarehouses, warehousesAvailable } from '@/lib/warehouses';
 
 export type Condition = 'good' | 'fair' | 'poor' | 'damaged';
 export type ColumnKey =
   | 'name' | 'category' | 'color' | 'serial' | 'barcode' | 'poNumber' | 'purchaseDate' | 'condition' | 'location'
-  | 'quantity' | 'unitValue' | 'totalValue';
-export type GroupBy = 'none' | 'location' | 'category';
+  | 'warehouse' | 'quantity' | 'unitValue' | 'totalValue';
+export type GroupBy = 'none' | 'location' | 'category' | 'warehouse';
 export type SortBy = 'name' | 'category' | 'location';
 export type Detail = 'summary' | 'detailed';
 
@@ -34,6 +35,7 @@ export const COLUMNS: ColumnDef[] = [
   { key: 'purchaseDate', label: 'Purchase Date', width: 14 },
   { key: 'condition', label: 'Condition', width: 11 },
   { key: 'location', label: 'Location / Van', width: 24 },
+  { key: 'warehouse', label: 'Home Warehouse', width: 22 },
   { key: 'quantity', label: 'Qty', numeric: true, width: 7 },
   { key: 'unitValue', label: 'Unit Value', numeric: true, width: 12 },
   { key: 'totalValue', label: 'Total Value', numeric: true, width: 14 },
@@ -41,11 +43,14 @@ export const COLUMNS: ColumnDef[] = [
 export const ALL_COLUMN_KEYS = COLUMNS.map((c) => c.key);
 export const PO_COLUMN_KEYS: ColumnKey[] = ['poNumber', 'purchaseDate'];
 export const COLOR_COLUMN_KEYS: ColumnKey[] = ['color'];
-/** Printed by default: everything except the PO and color columns, which are optional. */
-export const DEFAULT_PRINT_COLUMN_KEYS = ALL_COLUMN_KEYS.filter((k) => !PO_COLUMN_KEYS.includes(k) && !COLOR_COLUMN_KEYS.includes(k));
-/** Columns for exports: all of them, leaving out PO / color columns until the database has them. */
-export const exportColumnKeys = (poSupported: boolean | null, colorSupported: boolean | null = false) =>
-  ALL_COLUMN_KEYS.filter((k) => (poSupported || !PO_COLUMN_KEYS.includes(k)) && (colorSupported || !COLOR_COLUMN_KEYS.includes(k)));
+export const WAREHOUSE_COLUMN_KEYS: ColumnKey[] = ['warehouse'];
+/** Printed by default: everything except the PO, color and warehouse columns, which are optional. */
+export const DEFAULT_PRINT_COLUMN_KEYS = ALL_COLUMN_KEYS.filter((k) =>
+  !PO_COLUMN_KEYS.includes(k) && !COLOR_COLUMN_KEYS.includes(k) && !WAREHOUSE_COLUMN_KEYS.includes(k));
+/** Columns for exports: all of them, leaving out PO / color / warehouse columns until the database has them. */
+export const exportColumnKeys = (poSupported: boolean | null, colorSupported: boolean | null = false, warehouseSupported: boolean | null = false) =>
+  ALL_COLUMN_KEYS.filter((k) => (poSupported || !PO_COLUMN_KEYS.includes(k)) && (colorSupported || !COLOR_COLUMN_KEYS.includes(k))
+    && (warehouseSupported || !WAREHOUSE_COLUMN_KEYS.includes(k)));
 export const columnDefs = (keys: ColumnKey[]) => COLUMNS.filter((c) => keys.includes(c.key));
 
 /** One physical tool (one inventory_items row). */
@@ -57,9 +62,14 @@ export interface ReportItem {
   serial: string;
   barcode: string;
   condition: string;
-  /** 'warehouse' or the truck id. */
+  /** Where it is now: WAREHOUSE (one unnamed warehouse), 'wh:<warehouse id>', or the truck id. */
   locationKey: string;
   locationName: string;
+  /** The warehouse it belongs to (migration 006), even while on a van. */
+  homeWarehouseId?: string | null;
+  homeWarehouse?: string;
+  /** The warehouse it is physically in (only while in a warehouse). */
+  currentWarehouseId?: string | null;
   unitPrice: number | null;
   groupId: string | null;
   imageUrl?: string | null;
@@ -98,6 +108,10 @@ export interface ReportRow {
   color: string;
   /** The color value when every tool in the line has the same one ('' otherwise). */
   colorValue: string;
+  /** Home warehouse name, "Mixed" or ''. */
+  warehouse: string;
+  /** Home warehouse id when every tool in the line shares it ('' otherwise). */
+  warehouseId: string;
 }
 
 export interface ReportGroup {
@@ -122,6 +136,8 @@ export interface ReportData {
   trucks: TruckInfo[];
   /** Active techs assigned to each truck, by truck id. */
   truckTechs: Record<string, string[]>;
+  /** [] until migration 006 has run. */
+  warehouses: Warehouse[];
 }
 
 export interface ReportMeta {
@@ -134,6 +150,10 @@ export interface ReportMeta {
 
 export const WAREHOUSE = 'warehouse';
 export const UNCATEGORIZED = 'Uncategorized';
+/** locationKey of a tool in one of several named warehouses. */
+export const warehouseKey = (warehouseId: string) => `wh:${warehouseId}`;
+/** Is this locationKey a warehouse (the single unnamed one, or a named one)? */
+export const isWarehouseKey = (k: string) => k === WAREHOUSE || k.startsWith('wh:');
 
 export const conditionLabel = (c: string) => (c ? c.charAt(0).toUpperCase() + c.slice(1) : '');
 export const truckLabel = (t: TruckInfo) => (t.identifier ? `${t.name} (${t.identifier})` : t.name);
@@ -142,19 +162,29 @@ export const truckLabel = (t: TruckInfo) => (t.identifier ? `${t.name} (${t.iden
 
 const ITEM_COLUMNS = 'id, name, category_id, serial_number, barcode, condition, location_type, assigned_truck_id, unit_price, group_id, image_url';
 
-/** Ask for the PO / color columns only when the database has them (migrations 003, 004). */
+/** Ask for the PO / color / warehouse columns only when the database has them (migrations 003, 004, 006). */
 const itemColumns = async (): Promise<string> => {
-  const [po, color] = await Promise.all([poColumnsAvailable(), colorColumnAvailable()]);
-  return [ITEM_COLUMNS, po ? 'po_number, purchase_date' : '', color ? 'color' : ''].filter(Boolean).join(', ');
+  const [po, color, wh] = await Promise.all([poColumnsAvailable(), colorColumnAvailable(), warehousesAvailable()]);
+  return [ITEM_COLUMNS, po ? 'po_number, purchase_date' : '', color ? 'color' : '', wh ? 'home_warehouse_id, current_warehouse_id' : '']
+    .filter(Boolean).join(', ');
 };
 
 /** One inventory_items row -> ReportItem. */
-function toReportItem(r: Record<string, unknown>, categoryName: Map<string, string>, truckById: Map<string, TruckInfo>): ReportItem {
+export function toReportItem(
+  r: Record<string, unknown>, categoryName: Map<string, string>, truckById: Map<string, TruckInfo>,
+  warehouseById: Map<string, Warehouse> = new Map(),
+): ReportItem {
   const truckId = (r.assigned_truck_id as string | null) ?? null;
   const onTruck = r.location_type === 'truck' && truckId;
   const truck = onTruck ? truckById.get(truckId) : undefined;
   const price = r.unit_price === null || r.unit_price === undefined ? null : Number(r.unit_price);
+  const homeId = (r.home_warehouse_id as string | null) ?? null;
+  const currentId = onTruck ? null : (r.current_warehouse_id as string | null) ?? homeId;
+  const current = currentId ? warehouseById.get(currentId) : undefined;
   return {
+    homeWarehouseId: homeId,
+    homeWarehouse: homeId ? warehouseById.get(homeId)?.name ?? '' : '',
+    currentWarehouseId: currentId,
     id: r.id as string,
     name: ((r.name as string) ?? '').trim(),
     categoryId: (r.category_id as string | null) ?? null,
@@ -162,8 +192,8 @@ function toReportItem(r: Record<string, unknown>, categoryName: Map<string, stri
     serial: (r.serial_number as string) ?? '',
     barcode: (r.barcode as string) ?? '',
     condition: (r.condition as string) || 'good',
-    locationKey: onTruck ? truckId : WAREHOUSE,
-    locationName: onTruck ? (truck ? truckLabel(truck) : 'Unknown van') : 'Warehouse',
+    locationKey: onTruck ? truckId : current ? warehouseKey(current.id) : WAREHOUSE,
+    locationName: onTruck ? (truck ? truckLabel(truck) : 'Unknown van') : current ? current.name : 'Warehouse',
     unitPrice: Number.isFinite(price) ? price : null,
     groupId: (r.group_id as string | null) ?? null,
     imageUrl: (r.image_url as string | null) ?? null,
@@ -181,7 +211,7 @@ export async function loadCompanyName(companyId: string): Promise<string> {
 /** Every tool currently on one van (this company only). */
 export async function loadVanItems(companyId: string, truck: TruckInfo): Promise<ReportItem[]> {
   const cols = await itemColumns();
-  const [categories, rawItems] = await Promise.all([
+  const [categories, rawItems, warehouses] = await Promise.all([
     fetchAll(() => supabase.from('categories').select('id, name').eq('company_id', companyId).order('id')),
     fetchAll<Record<string, unknown>>(() => supabase
       .from('inventory_items')
@@ -191,15 +221,17 @@ export async function loadVanItems(companyId: string, truck: TruckInfo): Promise
       .eq('assigned_truck_id', truck.id)
       .order('id')
       .returns<Record<string, unknown>[]>()),
+    loadWarehouses(companyId).catch(() => [] as Warehouse[]),
   ]);
   const categoryName = new Map(categories.map((c) => [c.id as string, c.name as string]));
-  return rawItems.map((r) => toReportItem(r, categoryName, new Map([[truck.id, truck]])));
+  const warehouseById = new Map(warehouses.map((w) => [w.id, w]));
+  return rawItems.map((r) => toReportItem(r, categoryName, new Map([[truck.id, truck]]), warehouseById));
 }
 
 /** Everything a report needs, limited to one company (RLS enforces this too). */
 export async function loadReportData(companyId: string): Promise<ReportData> {
   const cols = await itemColumns();
-  const [company, categories, trucks, assignments, rawItems] = await Promise.all([
+  const [company, categories, trucks, assignments, rawItems, warehouses] = await Promise.all([
     supabase.from('companies').select('name').eq('id', companyId).single(),
     fetchAll(() => supabase.from('categories').select('id, name').eq('company_id', companyId).order('name').order('id')),
     fetchAll(() => supabase.from('trucks').select('id, name, identifier').eq('company_id', companyId).order('name').order('id')),
@@ -212,13 +244,15 @@ export async function loadReportData(companyId: string): Promise<ReportData> {
       .eq('company_id', companyId)
       .order('id')
       .returns<Record<string, unknown>[]>()),
+    loadWarehouses(companyId).catch((err) => { console.error('Could not load warehouses:', err); return [] as Warehouse[]; }),
   ]);
 
   const categoryName = new Map(categories.map((c) => [c.id as string, c.name as string]));
   const truckList: TruckInfo[] = trucks.map((t) => ({ id: t.id, name: t.name, identifier: t.identifier ?? '' }));
   const truckById = new Map(truckList.map((t) => [t.id, t]));
+  const warehouseById = new Map(warehouses.map((w) => [w.id, w]));
 
-  const items = rawItems.map((r) => toReportItem(r, categoryName, truckById));
+  const items = rawItems.map((r) => toReportItem(r, categoryName, truckById, warehouseById));
 
   // Tech names per van (best effort: the report still works without them).
   const truckTechs: Record<string, string[]> = {};
@@ -246,6 +280,7 @@ export async function loadReportData(companyId: string): Promise<ReportData> {
     categories: categories.map((c) => ({ id: c.id, name: c.name })),
     trucks: truckList,
     truckTechs,
+    warehouses,
   };
 }
 
@@ -280,6 +315,8 @@ export function summarizeItems(items: ReportItem[], key: string): ReportRow {
     })(),
     color: same((i) => i.color ?? '') ? colorLabel(first.color) : 'Mixed',
     colorValue: same((i) => i.color ?? '') ? first.color ?? '' : '',
+    warehouse: same((i) => i.homeWarehouseId ?? '') ? first.homeWarehouse ?? '' : 'Mixed',
+    warehouseId: same((i) => i.homeWarehouseId ?? '') ? first.homeWarehouseId ?? '' : '',
   };
 }
 
@@ -291,10 +328,11 @@ function listDistinct(values: string[], max = 3): string {
 
 export function buildRows(items: ReportItem[], detail: Detail): ReportRow[] {
   if (detail === 'detailed') return items.map((i) => summarizeItems([i], i.id));
-  // Summary: one line per tool type (same name + category) at each location.
+  // Summary: one line per tool type (same name + category) at each location, and per home
+  // warehouse, so every line can show which warehouse its tools belong to.
   const byType = new Map<string, ReportItem[]>();
   for (const i of items) {
-    const key = `${i.name.toLowerCase()}|${i.categoryId ?? ''}|${i.locationKey}`;
+    const key = `${i.name.toLowerCase()}|${i.categoryId ?? ''}|${i.locationKey}|${i.homeWarehouseId ?? ''}`;
     const list = byType.get(key);
     if (list) list.push(i);
     else byType.set(key, [i]);
@@ -306,9 +344,10 @@ type Compare = (a: ReportRow, b: ReportRow) => number;
 const cmp = (a: string, b: string) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' });
 const byText = (f: (r: ReportRow) => string): Compare => (a, b) => cmp(f(a), f(b));
 const byName = byText((r) => r.name);
-// Warehouse before vans; Uncategorized after real categories.
+// Warehouses before vans; Uncategorized after real categories; no home warehouse last.
 const byLocation: Compare = (a, b) =>
-  Number(a.locationKey !== WAREHOUSE) - Number(b.locationKey !== WAREHOUSE) || cmp(a.location, b.location);
+  Number(!isWarehouseKey(a.locationKey)) - Number(!isWarehouseKey(b.locationKey)) || cmp(a.location, b.location);
+const byWarehouse: Compare = (a, b) => Number(!a.warehouse) - Number(!b.warehouse) || cmp(a.warehouse, b.warehouse);
 const byCategory: Compare = (a, b) => Number(!a.categoryId) - Number(!b.categoryId) || cmp(a.category, b.category);
 
 export function sortRows(rows: ReportRow[], sortBy: SortBy): ReportRow[] {
@@ -332,9 +371,13 @@ const sumValue = (rows: ReportRow[]) => rows.reduce((n, r) => n + (r.totalValue 
 /** Split already-sorted rows into groups; row order inside each group is kept. */
 export function groupRows(rows: ReportRow[], groupBy: GroupBy): ReportGroup[] {
   if (groupBy === 'none') return [{ key: 'all', label: null, rows, quantity: sumQty(rows), value: sumValue(rows) }];
-  const keyOf = groupBy === 'location' ? (r: ReportRow) => r.locationKey : (r: ReportRow) => r.categoryId ?? '';
-  const labelOf = groupBy === 'location' ? (r: ReportRow) => r.location : (r: ReportRow) => r.category;
-  const orderOf = groupBy === 'location' ? byLocation : byCategory;
+  const keyOf = groupBy === 'location' ? (r: ReportRow) => r.locationKey
+    : groupBy === 'warehouse' ? (r: ReportRow) => r.warehouseId || r.warehouse
+    : (r: ReportRow) => r.categoryId ?? '';
+  const labelOf = groupBy === 'location' ? (r: ReportRow) => r.location
+    : groupBy === 'warehouse' ? (r: ReportRow) => (r.warehouse ? `Home: ${r.warehouse}` : 'No home warehouse')
+    : (r: ReportRow) => r.category;
+  const orderOf = groupBy === 'location' ? byLocation : groupBy === 'warehouse' ? byWarehouse : byCategory;
   const groups = new Map<string, ReportGroup>();
   for (const r of rows) {
     const k = keyOf(r);
@@ -382,7 +425,7 @@ function cellValue(row: ReportRow, key: ColumnKey): string | number | null {
 
 // ---------- export ----------
 
-const groupColumnLabel = (groupBy: GroupBy) => (groupBy === 'location' ? 'Group: Location' : 'Group: Category');
+const groupColumnLabel = (groupBy: GroupBy) => (groupBy === 'location' ? 'Group: Location' : groupBy === 'warehouse' ? 'Group: Home Warehouse' : 'Group: Category');
 
 export function exportFileName(companyName: string, title: string, ext: 'csv' | 'xlsx', at = new Date()) {
   const slug = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
@@ -489,7 +532,7 @@ export function downloadXlsx(fileName: string, meta: ReportMeta, columns: Column
     ['Printed by', meta.printedBy],
     ['Printed at', formatDateTime(meta.printedAt)],
     [],
-    [grouped ? (groupBy === 'location' ? 'Location / Van' : 'Category') : '', 'Tools', 'Total Value'],
+    [grouped ? (groupBy === 'location' ? 'Location / Van' : groupBy === 'warehouse' ? 'Home Warehouse' : 'Category') : '', 'Tools', 'Total Value'],
     ...(grouped ? groups.map((g) => [g.label, g.quantity, g.value]) : []),
     ['GRAND TOTAL', totals.quantity, totals.value],
   ];

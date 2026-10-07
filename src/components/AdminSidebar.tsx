@@ -5,8 +5,9 @@ import { Separator } from '@/components/ui/separator';
 import { 
   Package, Users, Activity, Settings, Scan, Mail, QrCode, 
   UserCheck, Truck, Plus, FileText, Wrench, Snowflake,
-  BarChart3, ChevronRight, Menu, X, Printer
+  BarChart3, ChevronRight, Menu, X, Printer, Warehouse as WarehouseIcon
 } from 'lucide-react';
+import { useWarehouseSupport } from '@/lib/warehouses';
 
 interface AdminSidebarProps {
   activeTab: string;
@@ -21,6 +22,8 @@ const menuItems = [
     items: [
       { id: "inventory", label: "Manage Parts", icon: Package },
       { id: "categories", label: "Categories", icon: Package },
+      // Shown only once the database has warehouses (migration 006).
+      { id: "warehouses", label: "Warehouses", icon: WarehouseIcon, needsWarehouses: true },
       { id: "print", label: "Print Inventory", icon: Printer },
       // { id: "create-request", label: "Create Request", icon: Plus },
       // { id: "fulfill", label: "Fulfill Requests", icon: Truck },
@@ -60,6 +63,8 @@ const menuItems = [
 ];
 
 export const AdminSidebar: React.FC<AdminSidebarProps> = ({ activeTab, onTabChange, isOpen = true, onToggle }) => {
+  const warehousesOn = useWarehouseSupport();
+  const visible = (item: { needsWarehouses?: boolean }) => !item.needsWarehouses || !!warehousesOn;
   return (
     <>
       {/* Mobile Overlay */}
@@ -105,7 +110,7 @@ export const AdminSidebar: React.FC<AdminSidebarProps> = ({ activeTab, onTabChan
                   {category.category}
                 </h3>
                 <div className="space-y-1">
-                  {category.items.map((item) => {
+                  {category.items.filter(visible).map((item) => {
                     const Icon = item.icon;
                     const isActive = activeTab === item.id;
                     

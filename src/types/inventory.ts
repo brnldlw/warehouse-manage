@@ -37,6 +37,9 @@ export interface InventoryItem {
   purchaseDate?: string;
   // Tool color ('red', 'blue', … or ''), once migration 004 has added the column
   color?: string;
+  // Several warehouses (migration 006): where the tool belongs, and where it is now (null on a van)
+  homeWarehouseId?: string | null;
+  currentWarehouseId?: string | null;
 }
 
 export interface User {

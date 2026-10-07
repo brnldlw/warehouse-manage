@@ -34,13 +34,14 @@ import { ColorSelect } from './ColorSelect';
 import { ColorDot } from './ColorDot';
 import { CompanyTotalsView } from './CompanyTotalsView';
 import { TotalsInput } from '@/lib/companyTotals';
+import { getLastWarehouse, isMissingWarehouseError, markWarehousesMissing, setLastWarehouse, useWarehouses, warehouseLabel } from '@/lib/warehouses';
 import { COLOR_NOT_ENABLED, COLOR_SHORT_NOTE, colorLabel, isMissingColorColumnError, markColorColumnMissing, useColorSupport } from '@/lib/toolColor';
 import { BulkMoveControls, BulkTool } from './moves/BulkMoveControls';
 import { loadVans } from '@/lib/vans';
 import { PrintPortal } from './print/PrintPortal';
 import { InventoryReportDocument } from './print/InventoryReportDocument';
 import {
-  ReportItem, ReportMeta, WAREHOUSE, downloadCsv, downloadXlsx, exportColumnKeys, exportFileName,
+  ReportItem, ReportMeta, WAREHOUSE, downloadCsv, downloadXlsx, exportColumnKeys, exportFileName, isWarehouseKey, warehouseKey,
   formatDateTime, groupRows, summarizeItems,
 } from '@/lib/inventoryReport';
 import {
@@ -91,12 +92,24 @@ export const InventoryManager: React.FC = () => {
     poNumber: '',
     purchaseDate: '',
     color: '',
+    warehouseId: '',
     quantity: 1,
     image: null as File | null
   });
   const [loading, setLoading] = useState(false);
   const poSupported = usePoSupport();
   const colorSupported = useColorSupport();
+  // Several warehouses (migration 006). wh.enabled is false until the SQL is run: everything
+  // warehouse-related is then hidden and the page works exactly as before.
+  const wh = useWarehouses(userProfile?.company_id);
+  const whName = (id: string | null | undefined) => (id ? wh.byId.get(id)?.name ?? '' : '');
+  // Add Tool / Bulk Import start with the last warehouse used (or the first active one).
+  useEffect(() => {
+    if (wh.enabled && !itemForm.warehouseId) {
+      setItemForm((prev) => ({ ...prev, warehouseId: getLastWarehouse(userProfile?.company_id, wh.active) }));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [wh.enabled, wh.active]);
   const [showSetColor, setShowSetColor] = useState(false);
   const [filterColor, setFilterColor] = useState<string>('all');
   // Admins only, with "All locations": one row per tool type across the company. Read-only.
@@ -125,14 +138,22 @@ export const InventoryManager: React.FC = () => {
     poTouched: false,
     dateTouched: false,
     colorTouched: false,
+    homeWarehouseId: '',
+    homeMixed: false,
+    homeTouched: false,
   });
   const [transferItem, setTransferItem] = useState<InventoryItem | null>(null);
   const [transferGroup, setTransferGroup] = useState<GroupedTool | null>(null);
   const [transferQuantity, setTransferQuantity] = useState(1);
-  const [transferTo, setTransferTo] = useState<{ type: 'warehouse' | 'truck'; truckId?: string }>({ type: 'warehouse' });
+  // warehouseId '' = each tool's own home warehouse.
+  const [transferTo, setTransferTo] = useState<{ type: 'warehouse' | 'truck'; truckId?: string; warehouseId?: string }>({ type: 'warehouse' });
   const [searchTerm, setSearchTerm] = useState('');
-  const [filterLocation, setFilterLocation] = useState<'all' | 'warehouse' | 'truck'>('all');
-  const [filterTruck, setFilterTruck] = useState<string>('all');
+  // One "Location" filter: all | warehouses (any) | wh:<id> | vans (any) | <truck id>.
+  const [place, setPlace] = useState<string>('all');
+  // Derived the old way, so the rest of the page (van bulk moves, Company totals) is unchanged.
+  const filterLocation: 'all' | 'warehouse' | 'truck' = place === 'all' ? 'all' : place === 'warehouses' || place.startsWith('wh:') ? 'warehouse' : 'truck';
+  const filterTruck: string = place === 'all' || place === 'warehouses' || place === 'vans' || place.startsWith('wh:') ? 'all' : place;
+  const filterWarehouse: string | null = place.startsWith('wh:') ? place.slice(3) : null;
   const [filterCategory, setFilterCategory] = useState<string>('all');
   const [sortField, setSortField] = useState<'name' | 'location' | 'condition' | 'category'>('name');
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('asc');
@@ -150,7 +171,7 @@ export const InventoryManager: React.FC = () => {
 
   // A new van filter starts a fresh selection, so "Return X tools from Van 3" only ever
   // means tools on Van 3.
-  useEffect(() => { setSelectedIds(new Set()); }, [filterTruck]);
+  useEffect(() => { setSelectedIds(new Set()); }, [place]);
 
   // Driver names for "Return X tools from Van 3 (Sam Smith)".
   const [vanTechs, setVanTechs] = useState<Record<string, string[]>>({});
@@ -247,7 +268,10 @@ export const InventoryManager: React.FC = () => {
         poNumber: item.po_number ?? '',
         purchaseDate: item.purchase_date ?? '',
         // Present only once migration 004 has run
-        color: (item.color ?? '').toLowerCase()
+        color: (item.color ?? '').toLowerCase(),
+        // Present only once migration 006 has run
+        homeWarehouseId: item.home_warehouse_id ?? null,
+        currentWarehouseId: item.location_type === 'truck' ? null : item.current_warehouse_id ?? item.home_warehouse_id ?? null
       }));
 
       setItems(transformedItems);
@@ -305,6 +329,11 @@ export const InventoryManager: React.FC = () => {
       return;
     }
 
+    if (wh.enabled && !itemForm.warehouseId) {
+      toast({ title: "Error", description: "Choose the tool's warehouse", variant: "destructive" });
+      return;
+    }
+
     if (itemForm.locationType === 'truck' && !itemForm.assignedTruckId) {
       toast({
         title: "Error",
@@ -342,6 +371,10 @@ export const InventoryManager: React.FC = () => {
         ? { po_number: itemForm.poNumber.trim() || null, purchase_date: itemForm.purchaseDate || null }
         : {};
       const colorFields = colorSupported ? { color: itemForm.color || null } : {};
+      // Home warehouse; if it starts in the warehouse, it's also physically there.
+      const warehouseFields = wh.enabled
+        ? { home_warehouse_id: itemForm.warehouseId, current_warehouse_id: itemForm.locationType === 'warehouse' ? itemForm.warehouseId : null }
+        : {};
 
       // Build array of items (all share same group_id)
       const itemsToInsert = Array.from({ length: qty }, (_, i) => ({
@@ -362,7 +395,8 @@ export const InventoryManager: React.FC = () => {
         company_id: userProfile.company_id,
         group_id: groupId,
         ...poFields,
-        ...colorFields
+        ...colorFields,
+        ...warehouseFields
       }));
 
       const { data, error } = await supabase
@@ -376,10 +410,12 @@ export const InventoryManager: React.FC = () => {
       if (error) {
         if (isMissingPoColumnError(error)) { markPoColumnsMissing(); throw new Error(PO_NOT_ENABLED); }
         if (isMissingColorColumnError(error)) { markColorColumnMissing(); throw new Error(COLOR_NOT_ENABLED); }
+        if (isMissingWarehouseError(error)) { markWarehousesMissing(); throw new Error('Warehouses are not switched on in the database yet. Reload the page and try again.'); }
         throw error;
       }
 
       if (!data || data.length === 0) throw new Error('No items returned');
+      if (wh.enabled) setLastWarehouse(userProfile.company_id, itemForm.warehouseId);
 
       let imageUrl = null;
       if (itemForm.image) {
@@ -435,7 +471,9 @@ export const InventoryManager: React.FC = () => {
         groupId: item.group_id,
         poNumber: item.po_number ?? '',
         purchaseDate: item.purchase_date ?? '',
-        color: (item.color ?? '').toLowerCase()
+        color: (item.color ?? '').toLowerCase(),
+        homeWarehouseId: item.home_warehouse_id ?? null,
+        currentWarehouseId: item.location_type === 'truck' ? null : item.current_warehouse_id ?? item.home_warehouse_id ?? null
       }));
 
       setItems(prev => [...newItems, ...prev]);
@@ -452,6 +490,7 @@ export const InventoryManager: React.FC = () => {
         poNumber: '',
         purchaseDate: '',
         color: '',
+        warehouseId: itemForm.warehouseId, // keep the last warehouse used
         quantity: 1,
         image: null
       });
@@ -518,33 +557,43 @@ export const InventoryManager: React.FC = () => {
 
     try {
       const toTruck = trucks.find(t => t.id === transferTo.truckId);
-      const toLocation = transferTo.type === 'warehouse' ? 'Warehouse' : toTruck?.name || 'Unknown';
+      const units = transferGroup
+        ? transferGroup.items.slice(0, Math.min(transferQuantity, transferGroup.items.length))
+        : [transferItem!];
+      // Which warehouse each tool ends up in: the one chosen, or (by default) its own home.
+      const targetOf = (i: InventoryItem) => (transferTo.type !== 'warehouse' || !wh.enabled ? null
+        : transferTo.warehouseId || i.homeWarehouseId || i.currentWarehouseId || null);
+      const placeOf = (i: InventoryItem) => (i.locationType === 'truck'
+        ? i.assignedTruckName || 'Unknown'
+        : whName(i.currentWarehouseId || i.homeWarehouseId) || 'Warehouse');
+      const toName = (i: InventoryItem) => (transferTo.type === 'truck' ? toTruck?.name || 'Unknown' : whName(targetOf(i)) || 'Warehouse');
 
-      // Group transfer — move N items from same group
-      if (transferGroup) {
-        const qty = Math.min(transferQuantity, transferGroup.items.length);
-        const itemsToTransfer = transferGroup.items.slice(0, qty);
-
-        const fromLocation = transferGroup.locationType === 'warehouse' 
-          ? 'Warehouse' 
-          : transferGroup.assignedTruckName || 'Unknown';
-
-        const updateData = {
+      // One update per destination warehouse (or one for a van).
+      const batches = new Map<string, InventoryItem[]>();
+      for (const i of units) {
+        const k = targetOf(i) ?? '';
+        (batches.get(k) ?? batches.set(k, []).get(k)!).push(i);
+      }
+      const now = new Date().toISOString();
+      for (const [target, list] of batches) {
+        const updateData: Record<string, unknown> = {
           location_type: transferTo.type,
           assigned_truck_id: transferTo.type === 'truck' ? transferTo.truckId : null,
-          assigned_at: new Date().toISOString(),
+          assigned_at: now,
           assigned_by: user.id,
-          location: transferTo.type === 'warehouse' ? 'Warehouse' : null
+          location: transferTo.type === 'warehouse' ? 'Warehouse' : null,
+          ...(wh.enabled ? { current_warehouse_id: transferTo.type === 'warehouse' ? target || null : null } : {}),
         };
-
-        const { error } = await supabase
-          .from('inventory_items')
-          .update(updateData)
-          .in('id', itemsToTransfer.map(i => i.id));
-
+        const { error } = await supabase.from('inventory_items').update(updateData).in('id', list.map(i => i.id));
         if (error) throw error;
+      }
 
-        // Log transfer activity
+      // History: same shape as before, plus which warehouse (marked so Tool Usage ignores it).
+      const whDetails = (i: InventoryItem) => (transferTo.type === 'warehouse'
+        ? { to_type: 'warehouse', ...(wh.enabled ? { to_warehouse_id: targetOf(i), home_warehouse_id: i.homeWarehouseId ?? null } : {}) }
+        : { to_type: 'van' });
+      if (transferGroup) {
+        const first = units[0];
         await supabase.from('activity_logs').insert({
           company_id: userProfile.company_id,
           user_id: user.id,
@@ -552,93 +601,58 @@ export const InventoryManager: React.FC = () => {
           details: {
             item_name: transferGroup.name,
             group_id: transferGroup.groupId,
-            quantity: qty,
-            from: fromLocation,
-            to: toLocation
+            quantity: units.length,
+            from: placeOf(first),
+            to: toName(first),
+            ...whDetails(first),
           }
         });
-
-        // Update local state
-        const transferredIds = new Set(itemsToTransfer.map(i => i.id));
-        setItems(prev => prev.map(item => 
-          transferredIds.has(item.id)
-            ? { 
-                ...item, 
-                locationType: transferTo.type,
-                assignedTruckId: transferTo.type === 'truck' ? transferTo.truckId : undefined,
-                assignedTruckName: toTruck?.name,
-                assignedAt: new Date()
-              } 
-            : item
-        ));
-
-        toast({ 
-          title: "Success", 
-          description: `${qty} × ${transferGroup.name} transferred to ${toLocation}` 
-        });
-        setTransferGroup(null);
-        setTransferQuantity(1);
-      }
-
-      // Single item transfer (from expanded group)
-      if (transferItem) {
-        const fromLocation = transferItem.locationType === 'warehouse' 
-          ? 'Warehouse' 
-          : transferItem.assignedTruckName || 'Unknown';
-
-        const updateData = {
-          location_type: transferTo.type,
-          assigned_truck_id: transferTo.type === 'truck' ? transferTo.truckId : null,
-          assigned_at: new Date().toISOString(),
-          assigned_by: user.id,
-          location: transferTo.type === 'warehouse' ? 'Warehouse' : null
-        };
-
-        const { error } = await supabase
-          .from('inventory_items')
-          .update(updateData)
-          .eq('id', transferItem.id);
-
-        if (error) throw error;
-
-        // Log transfer activity
+      } else {
+        const i = units[0];
         await supabase.from('activity_logs').insert({
           company_id: userProfile.company_id,
           user_id: user.id,
           action: 'transferred',
           details: {
-            item_name: transferItem.name,
-            item_id: transferItem.id,
-            serial_number: transferItem.serialNumber,
-            from: fromLocation,
-            to: toLocation
+            item_name: i.name,
+            item_id: i.id,
+            serial_number: i.serialNumber,
+            from: placeOf(i),
+            to: toName(i),
+            ...whDetails(i),
           }
         });
-
-        const truck = trucks.find(t => t.id === transferTo.truckId);
-        setItems(prev => prev.map(item => 
-          item.id === transferItem.id 
-            ? { 
-                ...item, 
-                locationType: transferTo.type,
-                assignedTruckId: transferTo.type === 'truck' ? transferTo.truckId : undefined,
-                assignedTruckName: truck?.name,
-                assignedAt: new Date()
-              } 
-            : item
-        ));
-
-        toast({ 
-          title: "Success", 
-          description: `Tool transferred to ${transferTo.type === 'warehouse' ? 'Warehouse' : truck?.name}` 
-        });
-        setTransferItem(null);
       }
+
+      // Update local state
+      const moved = new Map(units.map(i => [i.id, i]));
+      setItems(prev => prev.map(item => {
+        const m = moved.get(item.id);
+        return m
+          ? {
+              ...item,
+              locationType: transferTo.type,
+              assignedTruckId: transferTo.type === 'truck' ? transferTo.truckId : undefined,
+              assignedTruckName: transferTo.type === 'truck' ? toTruck?.name : undefined,
+              currentWarehouseId: targetOf(m),
+              assignedAt: new Date()
+            }
+          : item;
+      }));
+
+      const names = [...new Set(units.map(toName))];
+      const dest = names.length === 1 ? names[0] : 'their home warehouses';
+      toast({
+        title: "Success",
+        description: transferGroup ? `${units.length} × ${transferGroup.name} transferred to ${dest}` : `Tool transferred to ${dest}`
+      });
+      setTransferGroup(null);
+      setTransferQuantity(1);
+      setTransferItem(null);
     } catch (error: any) {
       toast({ title: "Error", description: error.message || "Failed to transfer tool", variant: "destructive" });
     }
   };
-
   const getCategoryName = (categoryId: string) => {
     const category = categories.find(c => c.id === categoryId);
     return category ? category.name : 'Unknown';
@@ -656,6 +670,7 @@ export const InventoryManager: React.FC = () => {
     const pos = [...new Set(unitsInEdit.map((i) => (i.poNumber || '').trim()))];
     const dates = [...new Set(unitsInEdit.map((i) => i.purchaseDate || ''))];
     const colors = [...new Set(unitsInEdit.map((i) => i.color || ''))];
+    const homes = [...new Set(unitsInEdit.map((i) => i.homeWarehouseId || ''))];
     setEditForm({
       name: item.name,
       description: item.description || '',
@@ -675,6 +690,9 @@ export const InventoryManager: React.FC = () => {
       poTouched: false,
       dateTouched: false,
       colorTouched: false,
+      homeWarehouseId: homes.length === 1 ? homes[0] : '',
+      homeMixed: homes.length > 1,
+      homeTouched: false,
     });
   };
 
@@ -720,6 +738,8 @@ export const InventoryManager: React.FC = () => {
           ...(poSupported && editForm.poTouched ? { po_number: editForm.poNumber.trim() || null } : {}),
           ...(poSupported && editForm.dateTouched ? { purchase_date: editForm.purchaseDate || null } : {}),
           ...(colorSupported && editForm.colorTouched ? { color: editForm.color || null } : {}),
+          // Home warehouse only (where it belongs); where it is now changes only with Transfer.
+          ...(wh.enabled && editForm.homeTouched && editForm.homeWarehouseId ? { home_warehouse_id: editForm.homeWarehouseId } : {}),
         };
 
         // Update all existing items in the group
@@ -774,6 +794,11 @@ export const InventoryManager: React.FC = () => {
             ...(poSupported && (!editForm.poMixed || editForm.poTouched) ? { po_number: editForm.poNumber.trim() || null } : {}),
             ...(poSupported && (!editForm.dateMixed || editForm.dateTouched) ? { purchase_date: editForm.purchaseDate || null } : {}),
             ...(colorSupported && (!editForm.colorMixed || editForm.colorTouched) ? { color: editForm.color || null } : {}),
+            // New copies belong to (and start in, if in a warehouse) the group's home warehouse.
+            ...(wh.enabled && editForm.homeWarehouseId ? {
+              home_warehouse_id: editForm.homeWarehouseId,
+              current_warehouse_id: editingGroup.locationType === 'truck' ? null : editingItem.currentWarehouseId || editForm.homeWarehouseId,
+            } : {}),
           }));
           const { error: insertError } = await supabase
             .from('inventory_items')
@@ -819,6 +844,7 @@ export const InventoryManager: React.FC = () => {
           unit_price: editForm.price,
           ...(poSupported ? { po_number: editForm.poNumber.trim() || null, purchase_date: editForm.purchaseDate || null } : {}),
           ...(colorSupported ? { color: editForm.color || null } : {}),
+          ...(wh.enabled && editForm.homeWarehouseId ? { home_warehouse_id: editForm.homeWarehouseId } : {}),
         };
 
         const { error } = await supabase
@@ -850,6 +876,7 @@ export const InventoryManager: React.FC = () => {
                 serialNumber: editForm.serialNumber, condition: editForm.condition, price: editForm.price, image_url: imageUrl,
                 ...(poSupported ? { poNumber: editForm.poNumber.trim(), purchaseDate: editForm.purchaseDate } : {}),
                 ...(colorSupported ? { color: editForm.color } : {}),
+                ...(wh.enabled && editForm.homeWarehouseId ? { homeWarehouseId: editForm.homeWarehouseId } : {}),
               }
             : item
         ));
@@ -892,10 +919,16 @@ export const InventoryManager: React.FC = () => {
 
   // Filtered to one van: the selection bar gets Return to warehouse / Move to another van.
   const vanFilter = filterTruck !== 'all' && filterTruck !== 'warehouse' ? trucks.find((t) => t.id === filterTruck) : undefined;
+  // Filtered to one warehouse: Move to another warehouse / Send to a van.
+  const warehouseFilter = filterWarehouse && wh.enabled ? wh.byId.get(filterWarehouse) : undefined;
+  const asBulk = (i: InventoryItem): BulkTool => ({
+    id: i.id, name: i.name, serial: i.serialNumber || '', barcode: i.barcode || '', condition: i.condition || 'good', home: whName(i.homeWarehouseId),
+  });
   const vanSelected: BulkTool[] = vanFilter
-    ? items.filter((i) => selectedIds.has(i.id) && i.locationType === 'truck' && i.assignedTruckId === vanFilter.id)
-      .map((i) => ({ id: i.id, name: i.name, serial: i.serialNumber || '', barcode: i.barcode || '', condition: i.condition || 'good' }))
-    : [];
+    ? items.filter((i) => selectedIds.has(i.id) && i.locationType === 'truck' && i.assignedTruckId === vanFilter.id).map(asBulk)
+    : warehouseFilter
+      ? items.filter((i) => selectedIds.has(i.id) && i.locationType !== 'truck' && i.currentWarehouseId === warehouseFilter.id).map(asBulk)
+      : [];
 
   /** "PO-1042", "PO-1042 +2 more" or "—" for a group row. */
   const groupPoText = (units: InventoryItem[]) => {
@@ -909,13 +942,13 @@ export const InventoryManager: React.FC = () => {
     item.serialNumber && `SN ${item.serialNumber}`,
     item.barcode && `BC ${item.barcode}`,
     item.poNumber && `PO ${item.poNumber}`,
-    item.locationType === 'warehouse' ? 'Warehouse' : item.assignedTruckName || 'Unknown van',
+    item.locationType === 'warehouse' ? whName(item.currentWarehouseId) || 'Warehouse' : item.assignedTruckName || 'Unknown van',
     (item.condition || 'good').charAt(0).toUpperCase() + (item.condition || 'good').slice(1),
   ].filter(Boolean).join(' · ');
 
   const getLocationDisplay = (item: InventoryItem) => {
     if (item.locationType === 'warehouse') {
-      return { icon: Warehouse, text: 'Warehouse', color: 'text-blue-600' };
+      return { icon: Warehouse, text: whName(item.currentWarehouseId) || 'Warehouse', color: 'text-blue-600' };
     }
     return { icon: Truck, text: item.assignedTruckName || 'Unknown Truck', color: 'text-green-600' };
   };
@@ -983,7 +1016,7 @@ export const InventoryManager: React.FC = () => {
     
     for (const item of itemsList) {
       // Key: group_id + location_type + truck_id (so same tool in warehouse vs truck shows separately)
-      const groupKey = `${item.groupId || item.id}_${item.locationType}_${item.assignedTruckId || 'warehouse'}`;
+      const groupKey = `${item.groupId || item.id}_${item.locationType}_${item.assignedTruckId || item.currentWarehouseId || 'warehouse'}`;
       
       if (groups.has(groupKey)) {
         const group = groups.get(groupKey)!;
@@ -1010,6 +1043,57 @@ export const InventoryManager: React.FC = () => {
     return Array.from(groups.values());
   };
 
+  // "Transfer To" list for the Transfer popups: home warehouse (default), each warehouse, each van.
+  const renderDestinations = (units: InventoryItem[], fromTruckId?: string) => {
+    const value = transferTo.type === 'truck' ? transferTo.truckId ?? '' : transferTo.warehouseId ? `wh:${transferTo.warehouseId}` : 'warehouse';
+    const inWh = (i: InventoryItem, id: string | null | undefined) => i.locationType !== 'truck' && !!id && i.currentWarehouseId === id;
+    const homes = [...new Set(units.map((i) => i.homeWarehouseId).filter(Boolean))] as string[];
+    const homeLabel = !wh.enabled ? 'Warehouse'
+      : homes.length === 1 ? `Home warehouse (${whName(homes[0])})` : "Each tool's home warehouse";
+    const allHome = units.every((i) => (wh.enabled ? inWh(i, i.homeWarehouseId) : i.locationType !== 'truck'));
+    return (
+      <Select
+        value={value}
+        onValueChange={(v) => {
+          if (v === 'warehouse') setTransferTo({ type: 'warehouse' });
+          else if (v.startsWith('wh:')) setTransferTo({ type: 'warehouse', warehouseId: v.slice(3) });
+          else setTransferTo({ type: 'truck', truckId: v });
+        }}
+      >
+        <SelectTrigger aria-label="Transfer to">
+          <SelectValue placeholder="Select destination" />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value="warehouse" disabled={allHome && units.length > 0 && (wh.enabled || units.length > 1)}>
+            <div className="flex items-center gap-2"><Warehouse className="h-4 w-4" />{homeLabel}</div>
+          </SelectItem>
+          {wh.enabled && wh.active.map((w) => (
+            <SelectItem key={w.id} value={`wh:${w.id}`} disabled={units.every((i) => inWh(i, w.id))}>
+              <div className="flex items-center gap-2"><Warehouse className="h-4 w-4" />{w.name}</div>
+            </SelectItem>
+          ))}
+          {trucks.map((truck) => (
+            <SelectItem key={truck.id} value={truck.id} disabled={truck.id === fromTruckId}>
+              <div className="flex items-center gap-2">
+                <Truck className="h-4 w-4" />
+                {truck.name} ({truck.identifier})
+              </div>
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    );
+  };
+
+  const placeLabel = (p: string) => {
+    if (p === 'all') return 'All';
+    if (p === 'warehouses') return wh.enabled ? 'All warehouses' : 'Warehouse';
+    if (p === 'vans') return 'On vans';
+    if (p.startsWith('wh:')) return whName(p.slice(3)) || 'Warehouse';
+    const t = trucks.find((x) => x.id === p);
+    return t ? t.name : 'Van';
+  };
+
   // Filter and sort items
   const filteredItems = items
     .filter(item => {
@@ -1022,6 +1106,8 @@ export const InventoryManager: React.FC = () => {
         getCategoryName(item.categoryId),
         item.locationType === 'warehouse' ? 'Warehouse' : item.assignedTruckName,
         colorLabel(item.color),
+        whName(item.homeWarehouseId),
+        whName(item.currentWarehouseId),
       );
 
       const matchesColor =
@@ -1034,14 +1120,15 @@ export const InventoryManager: React.FC = () => {
       
       const matchesTruck = 
         filterTruck === 'all' || 
-        item.assignedTruckId === filterTruck ||
-        (filterTruck === 'warehouse' && item.locationType === 'warehouse');
+        item.assignedTruckId === filterTruck;
+
+      const matchesWarehouse = !filterWarehouse || (item.locationType !== 'truck' && item.currentWarehouseId === filterWarehouse);
       
       const matchesCategory = 
         filterCategory === 'all' || 
         item.categoryId === filterCategory;
 
-      return matchesText && matchesLocation && matchesTruck && matchesCategory && matchesColor;
+      return matchesText && matchesLocation && matchesTruck && matchesWarehouse && matchesCategory && matchesColor;
     })
     .sort((a, b) => {
       let comparison = 0;
@@ -1094,7 +1181,7 @@ export const InventoryManager: React.FC = () => {
   // ---- Company totals (admins, "All locations" + "All vans" only). Category / color filters
   // still narrow it; the search box filters its rows. Every other setting is kept untouched, so
   // switching back shows the normal view exactly as it was. ----
-  const canShowTotals = isAdmin && filterLocation === 'all' && filterTruck === 'all';
+  const canShowTotals = isAdmin && place === 'all';
   const showTotals = canShowTotals && totalsView;
 
   // ---- Print / Export: exactly the filtered, sorted list on screen, one line per row shown ----
@@ -1109,8 +1196,11 @@ export const InventoryManager: React.FC = () => {
       serial: item.serialNumber ?? '',
       barcode: item.barcode ?? '',
       condition: item.condition || 'good',
-      locationKey: onTruck ? item.assignedTruckId! : WAREHOUSE,
-      locationName: item.locationType === 'warehouse' ? 'Warehouse' : item.assignedTruckName || 'Unknown Truck',
+      locationKey: onTruck ? item.assignedTruckId! : wh.enabled && item.currentWarehouseId ? warehouseKey(item.currentWarehouseId) : WAREHOUSE,
+      locationName: onTruck ? item.assignedTruckName || 'Unknown Truck' : whName(item.currentWarehouseId) || 'Warehouse',
+      homeWarehouseId: item.homeWarehouseId ?? null,
+      homeWarehouse: whName(item.homeWarehouseId),
+      currentWarehouseId: item.currentWarehouseId ?? null,
       unitPrice: Number.isFinite(price) ? price : null,
       groupId: item.groupId ?? null,
       poNumber: item.poNumber ?? '',
@@ -1126,26 +1216,25 @@ export const InventoryManager: React.FC = () => {
       && (filterColor === 'all' || (filterColor === 'none' ? !i.color : i.color === filterColor)))
     .map((i) => {
       const r = toReportItem(i);
-      const truck = r.locationKey !== WAREHOUSE ? trucks.find((t) => t.id === r.locationKey) : undefined;
+      const truck = !isWarehouseKey(r.locationKey) ? trucks.find((t) => t.id === r.locationKey) : undefined;
       return {
         id: r.id, name: r.name, categoryId: r.categoryId, categoryName: r.categoryName, color: r.color ?? '',
         locationKey: r.locationKey, unitPrice: r.unitPrice,
-        locationName: r.locationKey === WAREHOUSE ? 'Warehouse' : truck ? (truck.identifier ? `${truck.name} (${truck.identifier})` : truck.name) : r.locationName,
+        locationName: isWarehouseKey(r.locationKey) ? r.locationName : truck ? (truck.identifier ? `${truck.name} (${truck.identifier})` : truck.name) : r.locationName,
       };
     }) : [];
 
   const screenReportGroups = () =>
     groupRows(
       groupedTools.map((g) =>
-        summarizeItems(g.items.map(toReportItem), `${g.groupId}_${g.locationType}_${g.assignedTruckId || 'warehouse'}`)),
+        summarizeItems(g.items.map(toReportItem), `${g.groupId}_${g.locationType}_${g.assignedTruckId || g.items[0]?.currentWarehouseId || 'warehouse'}`)),
       'none',
     );
 
   const screenReportMeta = (): ReportMeta => {
     const filters = [
       searchTerm && `Search: "${searchTerm}"`,
-      `Location: ${filterLocation === 'all' ? 'All' : filterLocation === 'warehouse' ? 'Warehouse' : 'On vans'}`,
-      filterTruck !== 'all' && `Van: ${filterTruck === 'warehouse' ? 'Warehouse only' : trucks.find((t) => t.id === filterTruck)?.name ?? ''}`,
+      `Location: ${placeLabel(place)}`,
       `Category: ${filterCategory === 'all' ? 'All' : getCategoryName(filterCategory)}`,
       filterColor !== 'all' && `Color: ${filterColor === 'none' ? 'No color' : colorLabel(filterColor)}`,
       `Sorted by: ${sortField} (${sortDirection === 'asc' ? 'A–Z' : 'Z–A'})`,
@@ -1161,8 +1250,8 @@ export const InventoryManager: React.FC = () => {
 
   const exportScreen = (format: 'csv' | 'xlsx') => {
     const name = exportFileName(companyName, 'tools-inventory', format);
-    if (format === 'csv') downloadCsv(name, exportColumnKeys(poSupported, colorSupported), screenReportGroups(), 'none');
-    else downloadXlsx(name, screenReportMeta(), exportColumnKeys(poSupported, colorSupported), screenReportGroups(), 'none');
+    if (format === 'csv') downloadCsv(name, exportColumnKeys(poSupported, colorSupported, wh.enabled), screenReportGroups(), 'none');
+    else downloadXlsx(name, screenReportMeta(), exportColumnKeys(poSupported, colorSupported, wh.enabled), screenReportGroups(), 'none');
   };
 
   const SortIcon = ({ field }: { field: typeof sortField }) => {
@@ -1373,6 +1462,22 @@ export const InventoryManager: React.FC = () => {
                   </p>
                 )}
               </div>
+              {wh.enabled && (
+                <div>
+                  <Label htmlFor="add-warehouse">Warehouse *</Label>
+                  <Select value={itemForm.warehouseId} onValueChange={(value) => setItemForm(prev => ({ ...prev, warehouseId: value }))}>
+                    <SelectTrigger id="add-warehouse">
+                      <SelectValue placeholder="Choose warehouse" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {wh.active.map((w) => (
+                        <SelectItem key={w.id} value={w.id}>{w.name}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <p className="text-xs text-gray-600 mt-1">The tool's home: where it belongs, even while it's out on a van.</p>
+                </div>
+              )}
               <div>
                 <Label htmlFor="location-type">Initial Location *</Label>
                 <Select value={itemForm.locationType} onValueChange={(value: any) => setItemForm(prev => ({ ...prev, locationType: value, assignedTruckId: '' }))}>
@@ -1380,7 +1485,7 @@ export const InventoryManager: React.FC = () => {
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="warehouse">Warehouse</SelectItem>
+                    <SelectItem value="warehouse">{wh.enabled ? 'In its warehouse' : 'Warehouse'}</SelectItem>
                     <SelectItem value="truck">Assign to Van</SelectItem>
                   </SelectContent>
                 </Select>
@@ -1554,6 +1659,27 @@ export const InventoryManager: React.FC = () => {
                   onChange={(e) => setEditForm(prev => ({ ...prev, price: parseFloat(e.target.value) || 0 }))}
                 />
               </div>
+              {wh.enabled && (
+                <div>
+                  <Label htmlFor="edit-warehouse">Home warehouse</Label>
+                  <Select value={editForm.homeWarehouseId} onValueChange={(v) => setEditForm(prev => ({ ...prev, homeWarehouseId: v, homeTouched: true }))}>
+                    <SelectTrigger id="edit-warehouse">
+                      <SelectValue placeholder={editForm.homeMixed ? 'Several — leave to keep each one' : 'Choose warehouse'} />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {wh.warehouses.filter((w) => w.is_active || w.id === editForm.homeWarehouseId).map((w) => (
+                        <SelectItem key={w.id} value={w.id}>{warehouseLabel(w)}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <p className="text-xs text-gray-600 mt-1">
+                    {editingGroup && editingGroup.items.length > 1 && editForm.homeTouched
+                      ? `Will be set on all ${editingGroup.items.length} tools in this group. `
+                      : ''}
+                    Where it belongs. This doesn't move it; use Transfer for that.
+                  </p>
+                </div>
+              )}
               {colorSupported ? (
                 <div>
                   <Label htmlFor="edit-color">Color</Label>
@@ -1647,41 +1773,13 @@ export const InventoryManager: React.FC = () => {
               <div className="p-3 bg-gray-50 dark:bg-gray-800 rounded-lg">
                 <p className="text-sm text-gray-600 dark:text-gray-400">Current Location:</p>
                 <p className="font-medium">
-                  {transferItem.locationType === 'warehouse' ? 'Warehouse' : transferItem.assignedTruckName}
+                  {transferItem.locationType === 'warehouse' ? whName(transferItem.currentWarehouseId) || 'Warehouse' : transferItem.assignedTruckName}
+                  {wh.enabled && transferItem.homeWarehouseId && <span className="block text-sm font-normal text-gray-600">Home: {whName(transferItem.homeWarehouseId)}</span>}
                 </p>
               </div>
               <div>
                 <Label>Transfer To</Label>
-                <Select 
-                  value={transferTo.type === 'warehouse' ? 'warehouse' : transferTo.truckId} 
-                  onValueChange={(value) => {
-                    if (value === 'warehouse') {
-                      setTransferTo({ type: 'warehouse' });
-                    } else {
-                      setTransferTo({ type: 'truck', truckId: value });
-                    }
-                  }}
-                >
-                  <SelectTrigger>
-                    <SelectValue placeholder="Select destination" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="warehouse">
-                      <div className="flex items-center gap-2">
-                        <Warehouse className="h-4 w-4" />
-                        Warehouse
-                      </div>
-                    </SelectItem>
-                    {trucks.map((truck) => (
-                      <SelectItem key={truck.id} value={truck.id} disabled={truck.id === transferItem.assignedTruckId}>
-                        <div className="flex items-center gap-2">
-                          <Truck className="h-4 w-4" />
-                          {truck.name} ({truck.identifier})
-                        </div>
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                {renderDestinations([transferItem], transferItem.assignedTruckId)}
               </div>
             </div>
             <DialogFooter>
@@ -1709,7 +1807,7 @@ export const InventoryManager: React.FC = () => {
               <div className="p-3 bg-gray-50 dark:bg-gray-800 rounded-lg">
                 <p className="text-sm text-gray-600 dark:text-gray-400">Current Location:</p>
                 <p className="font-medium">
-                  {transferGroup.locationType === 'warehouse' ? 'Warehouse' : transferGroup.assignedTruckName}
+                  {transferGroup.locationType === 'warehouse' ? whName(transferGroup.items[0]?.currentWarehouseId) || 'Warehouse' : transferGroup.assignedTruckName}
                 </p>
                 <p className="text-sm text-gray-500 mt-1">Available: {transferGroup.quantity} items</p>
               </div>
@@ -1726,36 +1824,7 @@ export const InventoryManager: React.FC = () => {
               </div>
               <div>
                 <Label>Transfer To</Label>
-                <Select 
-                  value={transferTo.type === 'warehouse' ? 'warehouse' : transferTo.truckId} 
-                  onValueChange={(value) => {
-                    if (value === 'warehouse') {
-                      setTransferTo({ type: 'warehouse' });
-                    } else {
-                      setTransferTo({ type: 'truck', truckId: value });
-                    }
-                  }}
-                >
-                  <SelectTrigger>
-                    <SelectValue placeholder="Select destination" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="warehouse" disabled={transferGroup.locationType === 'warehouse'}>
-                      <div className="flex items-center gap-2">
-                        <Warehouse className="h-4 w-4" />
-                        Warehouse
-                      </div>
-                    </SelectItem>
-                    {trucks.map((truck) => (
-                      <SelectItem key={truck.id} value={truck.id} disabled={truck.id === transferGroup.assignedTruckId}>
-                        <div className="flex items-center gap-2">
-                          <Truck className="h-4 w-4" />
-                          {truck.name} ({truck.identifier})
-                        </div>
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                {renderDestinations(transferGroup.items.slice(0, transferQuantity), transferGroup.assignedTruckId)}
               </div>
             </div>
             <DialogFooter>
@@ -1779,23 +1848,17 @@ export const InventoryManager: React.FC = () => {
               total={items.length}
               noun="tools"
             />
-            <Select value={filterLocation} onValueChange={(value: any) => setFilterLocation(value)}>
-              <SelectTrigger className="w-full md:w-40">
+            <Select value={place} onValueChange={setPlace}>
+              <SelectTrigger className="w-full md:w-56" aria-label="Location">
                 <SelectValue placeholder="Location" />
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="all">All Locations</SelectItem>
-                <SelectItem value="warehouse">Warehouse</SelectItem>
-                <SelectItem value="truck">On Vans</SelectItem>
-              </SelectContent>
-            </Select>
-            <Select value={filterTruck} onValueChange={setFilterTruck}>
-              <SelectTrigger className="w-full md:w-48">
-                <SelectValue placeholder="Filter by Van" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All Vans</SelectItem>
-                <SelectItem value="warehouse">Warehouse Only</SelectItem>
+                <SelectItem value="warehouses">{wh.enabled ? 'All warehouses' : 'Warehouse'}</SelectItem>
+                {wh.enabled && wh.warehouses.map((w) => (
+                  <SelectItem key={w.id} value={`wh:${w.id}`}>{warehouseLabel(w)}</SelectItem>
+                ))}
+                <SelectItem value="vans">On Vans (all)</SelectItem>
                 {trucks.map((truck) => (
                   <SelectItem key={truck.id} value={truck.id}>
                     {truck.name}{truck.identifier ? ` (${truck.identifier})` : ''}
@@ -1856,14 +1919,15 @@ export const InventoryManager: React.FC = () => {
           <CardTitle className="flex items-center justify-between">
             <span>Tools ({filteredItems.length} items, {groupedTools.length} groups)</span>
           </CardTitle>
-          {vanFilter && (
+          {(vanFilter || warehouseFilter) && (
             <div className="space-y-3">
               <BulkMoveControls
                 companyId={userProfile?.company_id}
                 userId={userProfile?.id}
                 selected={vanSelected}
-                fromTruckId={vanFilter.id}
-                fromLabel={vanTechs[vanFilter.id]?.length ? `${vanFilter.name} (${vanTechs[vanFilter.id].join(', ')})` : vanFilter.name}
+                fromTruckId={vanFilter?.id}
+                fromWarehouseId={warehouseFilter?.id}
+                fromLabel={warehouseFilter ? warehouseFilter.name : vanTechs[vanFilter!.id]?.length ? `${vanFilter!.name} (${vanTechs[vanFilter!.id].join(', ')})` : vanFilter!.name}
                 onSelectionChange={(ids) => setSelectedIds(new Set(ids))}
                 onChanged={loadItems}
               >
@@ -1876,7 +1940,7 @@ export const InventoryManager: React.FC = () => {
               </BulkMoveControls>
             </div>
           )}
-          {!vanFilter && selectedIds.size > 0 && (
+          {!vanFilter && !warehouseFilter && selectedIds.size > 0 && (
             <div className="flex flex-col sm:flex-row sm:items-center gap-3 rounded-md border-2 border-blue-700 bg-blue-50 p-3">
               <span className="text-base font-semibold">{selectedIds.size} tool{selectedIds.size === 1 ? '' : 's'} selected</span>
               <div className="flex flex-wrap gap-2">
@@ -1956,7 +2020,10 @@ export const InventoryManager: React.FC = () => {
                     const isExpanded = expandedGroups.has(groupKey);
                     const GroupLocationIcon = group.locationType === 'warehouse' ? Warehouse : Truck;
                     const locationColor = group.locationType === 'warehouse' ? 'text-blue-600' : 'text-green-600';
-                    const locationText = group.locationType === 'warehouse' ? 'Warehouse' : group.assignedTruckName || 'Unknown Truck';
+                    const locationText = group.locationType === 'warehouse' ? whName(group.items[0]?.currentWarehouseId) || 'Warehouse' : group.assignedTruckName || 'Unknown Truck';
+                    // Each tool's own home, shown whenever it isn't where the tool is now (e.g. out on a van).
+                    const groupHomes = wh.enabled ? [...new Set(group.items.map((i) => whName(i.homeWarehouseId)).filter(Boolean))] : [];
+                    const homeText = groupHomes.length && (group.locationType === 'truck' || groupHomes.length > 1 || groupHomes[0] !== locationText) ? `Home: ${groupHomes.join(', ')}` : '';
 
                     return (
                       <React.Fragment key={groupKey}>
@@ -2021,6 +2088,7 @@ export const InventoryManager: React.FC = () => {
                               <GroupLocationIcon className="h-4 w-4" />
                               <span className="text-sm">{locationText}</span>
                             </div>
+                            {homeText && <p className="text-xs text-gray-700">{homeText}</p>}
                           </TableCell>
                           {poSupported && <TableCell className="text-sm">{groupPoText(group.items)}</TableCell>}
                           <TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
@@ -2105,7 +2173,7 @@ export const InventoryManager: React.FC = () => {
                                 {(item.condition || 'good').charAt(0).toUpperCase() + (item.condition || 'good').slice(1)}
                               </Badge>
                             </TableCell>
-                            <TableCell></TableCell>
+                            <TableCell className="text-xs text-gray-700">{wh.enabled && item.homeWarehouseId ? `Home: ${whName(item.homeWarehouseId)}` : ''}</TableCell>
                             {poSupported && <TableCell className="text-sm">{item.poNumber || '—'}</TableCell>}
                             <TableCell className="text-right">
                               <DropdownMenu>
@@ -2183,7 +2251,7 @@ export const InventoryManager: React.FC = () => {
             runningHeader={`${meta.companyName} — ${meta.title}`}
             runningHeaderRight={`Printed ${formatDateTime(meta.printedAt)}`}
           >
-            <InventoryReportDocument meta={meta} columns={exportColumnKeys(poSupported, colorSupported)} groups={screenReportGroups()} />
+            <InventoryReportDocument meta={meta} columns={exportColumnKeys(poSupported, colorSupported, wh.enabled)} groups={screenReportGroups()} />
           </PrintPortal>
         );
       })()}
